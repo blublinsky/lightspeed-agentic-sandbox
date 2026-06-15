@@ -1,4 +1,4 @@
-"""Synchronous HTTP client for POST /v1/agent/run (E2E only)."""
+"""Synchronous HTTP client for E2E against the sandbox service."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import httpx
 
 @dataclass
 class RunHttpResult:
+    """HTTP outcome for one E2E request (GET probe or POST ``/run``)."""
+
     status_code: int | None = None
     body: dict[str, Any] = field(default_factory=dict)
     raw_text: str = ""
@@ -26,7 +28,7 @@ def run_query(
     output_schema: dict[str, Any] | None = None,
     timeout_ms: int | None = None,
 ) -> RunHttpResult:
-    """POST /v1/agent/run. Never raises for HTTP status — callers inspect status_code."""
+    """POST ``/v1/agent/run``. Never raises for HTTP status — inspect ``status_code``."""
     base = server_url.rstrip("/")
     result = RunHttpResult()
     start = time.monotonic()

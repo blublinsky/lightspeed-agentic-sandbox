@@ -1,7 +1,7 @@
 """Query endpoint — POST /run.
 
 The operator sends {query, systemPrompt, outputSchema, context, timeout_ms}
-and the agent runs the LLM and returns {success, summary, ...structured fields}.
+and the agent runs the LLM and returns {metrics, result}.
 """
 
 from __future__ import annotations
@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter
 
 from lightspeed_agentic.logging import EventLogger
-from lightspeed_agentic.routes.models import RunRequest, RunResponse
+from lightspeed_agentic.routes.models import RunMetrics, RunRequest, RunResponse, RunResult
 from lightspeed_agentic.tools import DEFAULT_ALLOWED_TOOLS
 from lightspeed_agentic.types import AgentProvider, ProviderQueryOptions
 
@@ -53,6 +54,10 @@ def _format_context_prefix(context: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_cost_usd(cost: float) -> float | None:
+    return cost if cost > 0 else None
+
+
 def register_query_routes(
     router: APIRouter,
     *,
@@ -62,6 +67,8 @@ def register_query_routes(
     max_turns: int,
     default_timeout_ms: int,
 ) -> None:
+    """Register ``POST /run`` on the agent router."""
+
     async def run_endpoint(req: RunRequest) -> RunResponse:
         timeout = req.timeout_ms if req.timeout_ms is not None else default_timeout_ms
         system_prompt = req.systemPrompt or "You are an AI agent."
@@ -73,8 +80,29 @@ def register_query_routes(
 
         logger.info("[agent] Starting query (model=%s, provider=%s)", model, provider.name)
 
+        start = time.monotonic()
+        input_tokens = 0
+        output_tokens = 0
+        cost_usd: float | None = None
+        tool_calls_count = 0
+        text = ""
+
+        def _metrics() -> RunMetrics:
+            return RunMetrics(
+                latency_ms=int((time.monotonic() - start) * 1000),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost_usd,
+                model=model,
+                provider=provider.name,
+                tool_calls_count=tool_calls_count,
+            )
+
+        def _response(result: RunResult) -> RunResponse:
+            return RunResponse(metrics=_metrics(), result=result)
+
         try:
-            result = provider.query(
+            stream = provider.query(
                 ProviderQueryOptions(
                     prompt=prompt,
                     system_prompt=system_prompt,
@@ -87,29 +115,31 @@ def register_query_routes(
                 )
             )
 
-            text = ""
-            cost = 0.0
             event_logger = EventLogger("run")
 
             async def run() -> None:
-                nonlocal text, cost
-                async for event in result:
+                nonlocal text, cost_usd, input_tokens, output_tokens, tool_calls_count
+                async for event in stream:
                     event_logger.log(event)
-                    if event.type == "result":
+                    if event.type == "tool_call":
+                        tool_calls_count += 1
+                    elif event.type == "result":
                         text = event.text
-                        cost = event.cost_usd
+                        cost_usd = _normalize_cost_usd(event.cost_usd)
+                        input_tokens = event.input_tokens
+                        output_tokens = event.output_tokens
                         break
 
             await asyncio.wait_for(run(), timeout=timeout / 1000)
 
         except TimeoutError:
-            return RunResponse(success=False, summary=f"Agent timed out after {timeout}ms")
+            return _response(RunResult(success=False, summary=f"Agent timed out after {timeout}ms"))
         except Exception as e:
             logger.exception("[agent] query error")
-            return RunResponse(success=False, summary=f"Agent error: {e}")
+            return _response(RunResult(success=False, summary=f"Agent error: {e}"))
 
         if not text:
-            return RunResponse(success=False, summary="Agent returned empty response")
+            return _response(RunResult(success=False, summary="Agent returned empty response"))
 
         try:
             parsed = json.loads(text)
@@ -118,15 +148,27 @@ def register_query_routes(
             logger.info(
                 "[agent] query complete: success=%s, cost=$%.4f",
                 parsed.get("success", True),
-                cost,
+                cost_usd or 0.0,
             )
-            return RunResponse(
-                success=parsed.get("success", True),
-                summary=parsed.get("summary", text),
-                **{k: v for k, v in parsed.items() if k not in ("success", "summary")},
+            return _response(
+                RunResult(
+                    success=parsed.get("success", True),
+                    summary=parsed.get("summary", text),
+                    **{
+                        k: v
+                        for k, v in parsed.items()
+                        if k not in ("success", "summary", "metrics")
+                    },
+                )
             )
         except (json.JSONDecodeError, TypeError):
-            logger.info("[agent] query complete (text response), cost=$%.4f", cost)
-            return RunResponse(success=True, summary=text)
+            logger.info("[agent] query complete (text response), cost=$%.4f", cost_usd or 0.0)
+            return _response(RunResult(success=True, summary=text))
 
-    router.add_api_route("/run", run_endpoint, methods=["POST"], response_model=RunResponse)
+    router.add_api_route(
+        "/run",
+        run_endpoint,
+        methods=["POST"],
+        response_model=RunResponse,
+        response_model_exclude_none=True,
+    )

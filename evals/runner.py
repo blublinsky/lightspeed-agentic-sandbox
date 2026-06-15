@@ -1,4 +1,4 @@
-"""Eval runner — POSTs to /v1/agent/run."""
+"""Eval runner — POSTs to /v1/agent/run and reads the ``{metrics, result}`` envelope."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import httpx
 
 @dataclass
 class RunResult:
+    """Outcome of one eval ``POST /v1/agent/run`` call."""
+
     provider: str = ""
     success: bool = False
     summary: str = ""
@@ -28,7 +30,7 @@ async def run_query(
     output_schema: dict | None = None,
     timeout_ms: int | None = None,
 ) -> RunResult:
-    """POST to /v1/agent/run — the primary eval entry point."""
+    """POST to ``/v1/agent/run``; populate ``success``/``summary`` from ``result``."""
     result = RunResult()
     start = time.monotonic()
 
@@ -46,9 +48,10 @@ async def run_query(
             resp = await client.post(f"{server_url}/v1/agent/run", json=body)
             resp.raise_for_status()
             data = resp.json()
+            result_body = data["result"]
 
-        result.success = data.get("success", False)
-        result.summary = data.get("summary", "")
+        result.success = result_body.get("success", False)
+        result.summary = result_body.get("summary", "")
         result.raw = data
     except Exception as e:
         result.error = str(e)
@@ -64,6 +67,7 @@ def assert_tool_token(
     provider_name: str,
     script_name: str,
 ) -> None:
+    """Assert the provider ran ``script_name`` and reported its token in the response."""
     matches = list(eval_workspace.rglob(token_file_name))
     if not matches:
         raise AssertionError(

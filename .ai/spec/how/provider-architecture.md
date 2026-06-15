@@ -16,7 +16,7 @@ Cross-references: behavioral rules → `what/run-api.md`, `what/provider-contrac
 | `src/lightspeed_agentic/tools.py` | `DEFAULT_ALLOWED_TOOLS`. |
 | `src/lightspeed_agentic/logging.py` | `EventLogger` — thinking buffer, flush thresholds, truncation caps, structured log lines per event type. |
 | `src/lightspeed_agentic/routes/__init__.py` | `build_router()` — resolves model from env via provider name map and `DEFAULT_MODEL`, calls `register_query_routes`. |
-| `src/lightspeed_agentic/routes/models.py` | Pydantic `RunRequest`, `RunResponse` (`extra="allow"`). |
+| `src/lightspeed_agentic/routes/models.py` | Pydantic `RunRequest`, `RunMetrics`, `RunResult`, `RunResponse` (`metrics` + `result` envelope). |
 | `src/lightspeed_agentic/routes/query.py` | `_format_context_prefix()`, `register_query_routes()` — async `run_endpoint`, `asyncio.wait_for`, JSON parse / fallback, registers `POST /run`. |
 | `src/lightspeed_agentic/providers/claude.py` | `ClaudeProvider` — `_ensure_skills_link()`, `query()` using `ClaudeAgentOptions`, `query` stream, maps `StreamEvent` / `AssistantMessage` / `ResultMessage` to `ProviderEvent`, `output_format` from schema. |
 | `src/lightspeed_agentic/providers/gemini.py` | `_load_skills_toolset()`, `GeminiProvider` — `ExecuteBashTool` with auto-confirm wrapper and `bash -c` wrapping, optional search tools, `SkillToolset`, `Agent` + `Runner` + `InMemorySessionService`, `response_schema` when output schema set, usage aggregation. |
@@ -28,7 +28,7 @@ Cross-references: behavioral rules → `what/run-api.md`, `what/provider-contrac
 2. FastAPI validates `RunRequest`; `run_endpoint` computes timeout, system prompt, optional context prefix + query.
 3. Handler calls `provider.query(ProviderQueryOptions(...))` with model, turns, budget, tools, cwd, schema.
 4. Handler async-iterates events, `EventLogger.log` side effects, stops at first `result` event.
-5. Handler parses `result.text` as JSON object or falls back to plain summary; returns `RunResponse`.
+5. Handler parses provider `result` event text as JSON object or falls back to plain summary; aggregates stream into **`metrics`**; returns `RunResponse` with nested **`result`** (see `what/run-api.md` rules 18–22).
 
 ## Key Abstractions
 
