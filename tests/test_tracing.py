@@ -7,9 +7,16 @@ import re
 import pytest
 from opentelemetry import trace
 
+import lightspeed_agentic.tracing as _tracing_mod
 from lightspeed_agentic.tracing import get_tracer, init_tracer, parse_traceparent, shutdown_tracer
 
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracer_provider() -> None:
+    """Reset the module-level tracer provider so each test starts clean."""
+    _tracing_mod._tracer_provider = None
 
 
 class TestParseTraceparent:
