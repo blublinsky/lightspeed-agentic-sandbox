@@ -88,14 +88,31 @@ def test_recurses_into_anyof():
     assert result["anyOf"][1] == {"type": "string"}
 
 
-def test_recurses_into_oneof():
+def test_converts_oneof_to_anyof():
     schema = {
         "oneOf": [
             {"type": "object", "properties": {"b": {"type": "integer"}}},
         ],
     }
     result = _make_strict(schema)
-    assert result["oneOf"][0]["additionalProperties"] is False
+    assert "oneOf" not in result
+    assert result["anyOf"][0]["additionalProperties"] is False
+
+
+def test_oneof_preserves_existing_anyof():
+    schema = {
+        "anyOf": [
+            {"type": "object", "properties": {"x": {"type": "string"}}},
+        ],
+        "oneOf": [
+            {"type": "object", "properties": {"y": {"type": "integer"}}},
+        ],
+    }
+    result = _make_strict(schema)
+    assert "oneOf" not in result
+    assert len(result["anyOf"]) == 2
+    assert result["anyOf"][0]["additionalProperties"] is False
+    assert result["anyOf"][1]["additionalProperties"] is False
 
 
 def test_recurses_into_allof():
