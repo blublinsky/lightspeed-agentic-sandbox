@@ -45,6 +45,8 @@ from lightspeed_agentic.types import (
     stringify,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _make_strict(schema: dict[str, Any]) -> dict[str, Any]:
     """Add additionalProperties:false and required:[all props] to all objects recursively."""
@@ -57,7 +59,11 @@ def _make_strict(schema: dict[str, Any]) -> dict[str, Any]:
         schema["properties"] = {k: _make_strict(v) for k, v in schema["properties"].items()}
     if "items" in schema and isinstance(schema["items"], dict):
         schema["items"] = _make_strict(schema["items"])
-    for keyword in ("anyOf", "oneOf", "allOf"):
+    # OpenAI structured output supports anyOf but not oneOf — convert.
+    if "oneOf" in schema and isinstance(schema["oneOf"], list):
+        logger.info("Converting oneOf to anyOf for OpenAI compatibility")
+        schema.setdefault("anyOf", []).extend(schema.pop("oneOf"))
+    for keyword in ("anyOf", "allOf"):
         if keyword in schema and isinstance(schema[keyword], list):
             schema[keyword] = [_make_strict(s) for s in schema[keyword]]
     if "not" in schema and isinstance(schema["not"], dict):
@@ -110,8 +116,6 @@ class _RawJsonSchema(AgentOutputSchemaBase):
     def validate_json(self, json_str: str) -> Any:
         return json.loads(json_str)
 
-
-logger = logging.getLogger(__name__)
 
 _openai_initialized = False
 
