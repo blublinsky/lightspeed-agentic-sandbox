@@ -157,7 +157,7 @@ def prepare_echo_token(bdd_context: dict[str, Any]) -> None:
     bdd_context["query"] = (
         "Use the echo-token skill end-to-end:\n"
         "1. Load the echo-token skill.\n"
-        "2. From the loaded skill directory (.agents/echo-token), run: bash tools/echo-token.sh\n"
+        "2. From the skill directory, run: bash scripts/echo-token.sh\n"
         "3. Parse the JSON printed to stdout.\n"
         "4. Reply with a single JSON object only (no markdown): success=true, "
         "summary containing the token verbatim, token equal to the script token field, "

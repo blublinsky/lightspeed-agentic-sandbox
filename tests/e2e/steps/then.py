@@ -59,7 +59,7 @@ def assert_jsonschema(bdd_context: dict[str, Any]) -> None:
     if isinstance(response_token, str) and response_token == _EMPTY_STRING_SHA256:
         raise AssertionError(
             "response token looks fabricated (empty-string SHA-256); "
-            "run bash tools/echo-token.sh and use its stdout JSON"
+            "run bash scripts/echo-token.sh and use its stdout JSON"
         )
     jsonschema.validate(instance=body, schema=schema)
 
@@ -141,7 +141,7 @@ def assert_token_file(e2e_output_dir: Path | None, bdd_context: dict[str, Any]) 
     token_path = e2e_output_dir / ".e2e_token"
     assert token_path.exists(), (
         f"token file not found at {token_path}; "
-        "the agent must run bash tools/echo-token.sh from .agents/echo-token"
+        "the agent must run bash scripts/echo-token.sh from the skill directory"
     )
     token = token_path.read_text().strip()
     assert token, "token file is empty"

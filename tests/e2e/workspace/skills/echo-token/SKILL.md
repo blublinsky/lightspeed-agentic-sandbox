@@ -9,15 +9,13 @@ Generate a verification token and write it to disk.
 
 ## Required steps
 
-1. Load this skill (it is staged under `.agents/echo-token`).
+1. Load this skill.
 
-2. Run the tool script from that directory (mandatory — do not skip):
+2. Run the bundled script from the skill directory (mandatory — do not skip):
 
 ```bash
-bash tools/echo-token.sh
+bash scripts/echo-token.sh
 ```
-
-Use workdir `.agents/echo-token` if the shell tool requires an explicit working directory.
 
 3. Read the JSON object printed to stdout.
 
