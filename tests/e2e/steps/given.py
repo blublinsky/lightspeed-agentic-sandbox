@@ -41,7 +41,10 @@ def sandbox_running_with_skills(server_url: str, e2e_output_dir: Path | None) ->
 
 @given("a simple non-skill query has been prepared")
 def prepare_simple_non_skill(bdd_context: dict[str, Any]) -> None:
-    bdd_context["query"] = "In one sentence, name any primary color."
+    bdd_context["query"] = (
+        "In one sentence, name any primary color. "
+        "Answer with plain text only. Do not call any tools."
+    )
     bdd_context["output_schema"] = None
 
 
@@ -154,7 +157,7 @@ def prepare_echo_token(bdd_context: dict[str, Any]) -> None:
     bdd_context["query"] = (
         "Use the echo-token skill end-to-end:\n"
         "1. Load the echo-token skill.\n"
-        "2. From the loaded skill directory (.agents/echo-token), run: bash tools/echo-token.sh\n"
+        "2. From the skill directory, run: bash scripts/echo-token.sh\n"
         "3. Parse the JSON printed to stdout.\n"
         "4. Reply with a single JSON object only (no markdown): success=true, "
         "summary containing the token verbatim, token equal to the script token field, "
@@ -187,7 +190,8 @@ def prepare_nested(bdd_context: dict[str, Any]) -> None:
 def prepare_no_schema(bdd_context: dict[str, Any]) -> None:
     bdd_context["output_schema"] = None
     bdd_context["query"] = (
-        "In one short sentence, name any primary color. Do not return JSON; plain text is fine."
+        "In one short sentence, name any primary color. "
+        "Answer with plain text only. Do not return JSON. Do not call any tools."
     )
 
 
