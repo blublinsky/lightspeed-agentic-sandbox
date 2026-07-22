@@ -10,6 +10,7 @@ metadata:
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
       == "main" && ("Containerfile".pathChanged() || "src/***".pathChanged()
+      || "tests/***".pathChanged()
       || "pyproject.toml".pathChanged() || "README.md".pathChanged()
       || "LICENSE".pathChanged() || "requirements*.txt".pathChanged()
       || "rpms.in.yaml".pathChanged() || "rpms.lock.yaml".pathChanged()
