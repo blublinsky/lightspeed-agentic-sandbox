@@ -1,3 +1,8 @@
 # Manual version overrides for RHOAI compatibility.
 # Pin packages here when RHOAI has a different version than PyPI resolves to.
 # Regenerate after editing: make konflux-requirements
+
+# RHOAI ships pydantic-core 2.46.1. The auto-override logic pins pydantic
+# to the latest RHOAI version (2.13.4), but that requires pydantic-core 2.46.4.
+# Pin pydantic to 2.13.1 which matches pydantic-core 2.46.1 exactly.
+pydantic==2.13.1
