@@ -14,6 +14,7 @@ metadata:
       || "LICENSE".pathChanged() || "requirements*.txt".pathChanged()
       || "rpms.in.yaml".pathChanged() || "rpms.lock.yaml".pathChanged()
       || "ubi.repo".pathChanged() || "artifacts.lock.yaml".pathChanged()
+      || ".konflux/***".pathChanged()
       || ".tekton/lightspeed-agentic-sandbox-pull-request.yaml".pathChanged())
   creationTimestamp: null
   labels:
