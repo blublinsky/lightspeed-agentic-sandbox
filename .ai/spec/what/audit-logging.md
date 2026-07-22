@@ -106,7 +106,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 22. When the OTLP log endpoint environment variable is set (wired by the lightspeed-operator when `spec.templog` is enabled), the sandbox MUST also emit audit span data as OTLP log records to that endpoint. This is in addition to the stdout and OTLP trace exporters.
 
-23. Each OTLP log record MUST carry: `trace_id` in the log record's trace context (received via `traceparent` header), `agenticrun.uid` as a log record attribute (for cross-trace correlation), and the span event data as the log record body.
+23. Each OTLP log record MUST carry: `agenticrun.uid` as a log record attribute (raw Kubernetes `metadata.uid` with hyphens, received from the operator via `x-agenticrun-uid` header — collector normalizes to 32-char hex for the `agentic_run_id` column), `agenticrun.phase` as a log record attribute (the current audit phase derived from `derive_phase()`: `analysis`, `execution`, or `verification`), and the span event data as the log record body. The OTel log record's native `TraceID` field carries the per-phase trace ID (from `traceparent` header) and is not used by the collector for templog column mapping.
 
 24. The OTLP log endpoint is independent of the OTEL tracing endpoint. Both can be active simultaneously.
 
