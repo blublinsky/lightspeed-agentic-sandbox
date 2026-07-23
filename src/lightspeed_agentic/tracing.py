@@ -1,7 +1,18 @@
-"""OTEL tracing — tracer initialization and traceparent parsing."""
+"""OTEL tracing — tracer initialization and traceparent parsing.
+
+Relies on the OTEL Python SDK's built-in environment variable handling.
+Standard OTEL_* env vars (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES,
+OTEL_EXPORTER_OTLP_HEADERS, OTEL_EXPORTER_OTLP_INSECURE, etc.) are read
+by the SDK automatically — no manual parsing needed.
+
+This module adds:
+- OTEL_EXPORTER_OTLP_PROTOCOL: selects gRPC vs http/protobuf exporter
+- OTEL_TRACES_EXPORTER=none: disables span export even when endpoint is set
+"""
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import sys
@@ -9,7 +20,7 @@ from collections.abc import Sequence
 
 from opentelemetry import trace
 from opentelemetry.context import Context
-from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
@@ -19,9 +30,10 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
-_SERVICE_NAME = "lightspeed-agentic-sandbox"
+_DEFAULT_SERVICE_NAME = "lightspeed-agentic-sandbox"
 _TRACER_NAME = "lightspeed_agentic"
 _tracer_provider: TracerProvider | None = None
+_logger = logging.getLogger(__name__)
 
 
 class OTLPJsonStdoutExporter(SpanExporter):
@@ -44,30 +56,74 @@ class OTLPJsonStdoutExporter(SpanExporter):
 
 
 def init_tracer(*, audit_enabled: bool = False) -> None:
+    """Initialize the OTEL tracer provider.
+
+    If OTEL_EXPORTER_OTLP_ENDPOINT is not set or OTEL_TRACES_EXPORTER is
+    ``none``, creates a no-op tracer (no spans exported).
+    """
     global _tracer_provider
-    resource = Resource.create({"service.name": _SERVICE_NAME})
+    if _tracer_provider is not None:
+        return
+
+    resource = Resource.create()
+    if resource.attributes.get(SERVICE_NAME) == "unknown_service":
+        resource = resource.merge(Resource({SERVICE_NAME: _DEFAULT_SERVICE_NAME}))
     _tracer_provider = TracerProvider(resource=resource)
     if audit_enabled:
         _tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPJsonStdoutExporter()))
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
-    if endpoint:
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
-        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=not endpoint.startswith("https"))
+    endpoint = os.environ.get(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    ).strip()
+    traces_exporter = os.environ.get("OTEL_TRACES_EXPORTER", "otlp").strip().lower()
+
+    if traces_exporter not in ("otlp", "none"):
+        _logger.warning("unsupported OTEL_TRACES_EXPORTER=%r, disabling export", traces_exporter)
+        traces_exporter = "none"
+
+    if endpoint and traces_exporter != "none":
+        protocol = os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").strip().lower()
+        if protocol not in ("grpc", "http/protobuf", ""):
+            _logger.warning(
+                "unsupported OTEL_EXPORTER_OTLP_PROTOCOL=%r, defaulting to grpc", protocol
+            )
+            protocol = "grpc"
+
+        exporter: SpanExporter
+        if protocol == "http/protobuf":
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpExporter,
+            )
+
+            exporter = HttpExporter(endpoint=endpoint)
+        else:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter as GrpcExporter,
+            )
+
+            exporter = GrpcExporter(endpoint=endpoint)
+
         _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+
     trace.set_tracer_provider(_tracer_provider)
 
 
 def shutdown_tracer() -> None:
+    """Shutdown the tracer provider, flushing any pending spans."""
     if _tracer_provider:
         _tracer_provider.shutdown()
 
 
 def get_tracer() -> trace.Tracer:
+    """Get a tracer instance for creating spans."""
     return trace.get_tracer(_TRACER_NAME)
 
 
 def parse_traceparent(header: str | None) -> tuple[str, Context | None]:
+    """Parse W3C traceparent header and return (trace_id, context).
+
+    If the header is invalid or missing, generates a new trace ID.
+    """
     if header:
         parts = header.split("-")
         if len(parts) >= 4:
@@ -98,6 +154,7 @@ def parse_traceparent(header: str | None) -> tuple[str, Context | None]:
 
 
 def _generate_trace_id() -> tuple[str, Context]:
+    """Generate a new trace ID and root context."""
     trace_id_hex = secrets.token_hex(16)
     span_id_hex = secrets.token_hex(8)
     span_ctx = SpanContext(
