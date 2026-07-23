@@ -1,57 +1,40 @@
-# Architecture: modules, data flow, SDK integration
+# Architecture: data flow, SDK integration
 
-Audience: AI agents (Claude). File paths and symbols allowed here.
-
-Cross-references: behavioral rules → `what/run-api.md`, `what/provider-contract.md`, `what/configuration.md`.
-
-## Module Map
-
-| Path | Contents |
-|------|----------|
-| `src/lightspeed_agentic/__init__.py` | Re-exports `create_provider`, `EventLogger`, `AgentProvider`, event dataclasses, `ProviderQueryOptions`. |
-| `src/lightspeed_agentic/app.py` | `app: FastAPI` — constructs provider via `create_provider()`, builds router with `build_router(...)`, `include_router(..., prefix="/v1/agent")`, registers `GET /health` and `GET /ready` via health module. |
-| `src/lightspeed_agentic/health.py` | `GET /health` liveness (no external calls) + `GET /ready` readiness (R1 credential env + R2 provider endpoint reachability per `health-probes.md`). |
-| `src/lightspeed_agentic/factory.py` | `ProviderName`, `create_provider()` — `match` on name/env, lazy-imports `DeepAgentsProvider`, `GeminiProvider`, `OpenAIProvider`. |
-| `src/lightspeed_agentic/types.py` | `stringify()`, truncation-related constants, event dataclasses (`TextDeltaEvent`, `ThinkingDeltaEvent`, `ContentBlockStopEvent`, `ToolCallEvent`, `ToolResultEvent`, `ResultEvent`), `ProviderQueryOptions`, abstract `AgentProvider`. |
-| `src/lightspeed_agentic/tools.py` | `DEFAULT_ALLOWED_TOOLS`. |
-| `src/lightspeed_agentic/mcp.py` | `parse_mcp_servers()` — reads `LIGHTSPEED_MCP_SERVERS` env var, resolves headers (SA token, Secret files, Client passthrough), returns list of resolved MCP server configs for `ProviderQueryOptions.mcp_servers`. |
-| `src/lightspeed_agentic/logging.py` | `EventLogger` — thinking buffer, flush thresholds, truncation caps, structured log lines per event type. |
-| `src/lightspeed_agentic/routes/__init__.py` | `build_router()` — resolves model from env via provider name map and `DEFAULT_MODEL`, calls `register_query_routes`. |
-| `src/lightspeed_agentic/routes/models.py` | Pydantic `RunRequest`, `RunResponse` (`extra="allow"`). |
-| `src/lightspeed_agentic/routes/query.py` | `_format_context_prefix()`, `register_query_routes()` — async `run_endpoint`, `asyncio.wait_for`, JSON parse / fallback, registers `POST /run`. |
-| `src/lightspeed_agentic/providers/deepagents.py` | `_resolve_model()`, `_json_schema_to_pydantic()`, `DeepAgentsProvider` — `create_deep_agent()` with `LocalShellBackend`, `ChatAnthropic` / `ChatAnthropicVertex` / Bedrock model routing, thinking block extraction from `AIMessage.content`, `SkillsMiddleware` via `skills=[cwd]`, `response_format` for structured output, `AnthropicPromptCachingMiddleware` (auto-applied), usage aggregation from `usage_metadata`. |
-| `src/lightspeed_agentic/providers/gemini.py` | `_load_skills_toolset()`, `GeminiProvider` — `ExecuteBashTool` with auto-confirm wrapper and `bash -c` wrapping, optional search tools, `SkillToolset`, `Agent` + `Runner` + `InMemorySessionService`, `response_schema` when output schema set, usage aggregation. |
-| `src/lightspeed_agentic/providers/openai.py` | `_make_strict`, `_is_native_openai`, `_RawJsonSchema`, `_ensure_openai_init()`, `OpenAIProvider` — `AsyncOpenAI`, `OpenAIResponsesModel`, `SandboxAgent`, `UnixLocalSandboxClient`, capabilities `Shell`/`Filesystem`/`Skills`, `Runner.run_streamed`, stream event mapping. |
+Audience: AI agents. File paths and symbols allowed here.
+Package tree: `AGENTS.md`. Behavioral rules: `what/run-api.md`, `what/provider-contract.md`, `what/configuration.md`, `what/audit-logging.md`.
 
 ## Data Flow
 
-1. Client (operator) `POST /v1/agent/run` with JSON body.
-2. FastAPI validates `RunRequest`; `run_endpoint` computes timeout, system prompt, optional context prefix + query.
-3. Handler calls `provider.query(ProviderQueryOptions(...))` with model, turns, budget, tools, cwd, schema, and resolved MCP server configs.
-4. Handler async-iterates events, `EventLogger.log` side effects, stops at first `result` event.
-5. Handler parses `result.text` as JSON object or falls back to plain summary; returns `RunResponse`.
+1. Startup: `config.resolve_sdk()` maps `LIGHTSPEED_*` → SDK env; `parse_reasoning_config()`; `create_provider(sdk.name)`; `build_router(...)`; register health + metrics; lifespan initializes tracer.
+2. Client (operator) `POST /v1/agent/run` with JSON body and optional `traceparent` / `x-agenticrun-uid`.
+3. FastAPI validates `RunRequest`; `run_endpoint` computes timeout, system prompt, optional context prefix + query; may resolve MCP servers via `mcp.parse_mcp_servers()`.
+4. Handler calls `provider.query(ProviderQueryOptions(...))` with model, turns, budget, tools, cwd, schema, reasoning_config, and resolved MCP server configs.
+5. Handler async-iterates events; `EventLogger` and `AuditLogger` side effects; metrics updated; stops at first `result` event.
+6. Handler parses `result.text` as JSON object or falls back to plain summary; returns `RunResponse`.
 
 ## Key Abstractions
 
-- **Factory:** `create_provider` centralizes backend choice and lazy imports so optional SDKs are not loaded unless selected.
+- **Config mapping:** `resolve_sdk()` owns env → SDK name; factory does not read provider env vars.
+- **Factory:** `create_provider(name)` lazy-imports the selected adapter.
 - **Events:** Normalized `ProviderEvent` union decouples route layer from vendor streaming models.
-- **Options:** `ProviderQueryOptions` is the single bundle passed into every adapter.
-- **Router builder:** Encapsulates env-based model resolution and default router parameters.
+- **Options:** `ProviderQueryOptions` is the single bundle passed into every adapter (includes `mcp_servers`, `reasoning_config`).
+- **Router builder:** Env-based model resolution and default router parameters.
 
 ## Integration Points
 
 - **FastAPI / Uvicorn:** ASGI entry `lightspeed_agentic.app:app`.
-- **deepagents (+ langchain-anthropic, langchain-google-vertexai, langchain-aws):** `create_deep_agent`, `LocalShellBackend`, `ChatAnthropic`, `ChatAnthropicVertex`, `AnthropicPromptCachingMiddleware`, LangGraph `CompiledStateGraph`, `AIMessage`, `ToolMessage`, `HumanMessage`.
-- **google-adk / google.genai:** `Agent`, `Runner`, `InMemorySessionService`, `ExecuteBashTool`, `SkillToolset`, `GenerateContentConfig`. MCP via `McpToolset` with `StreamableHTTPConnectionParams`.
-- **openai-agents (+ openai):** `SandboxAgent`, `Runner`, `UnixLocalSandboxClient`, stream item types, `AgentOutputSchemaBase` subclass for raw schema. MCP via `MCPServerStreamableHttp`.
+- **deepagents (+ langchain-anthropic, langchain-google-vertexai, langchain-aws, langchain-mcp-adapters):** `create_deep_agent`, `LocalShellBackend`, `ChatAnthropic` / Vertex / Bedrock, MCP via `MultiServerMCPClient`.
+- **google-adk / google.genai:** `Agent`, `Runner`, `InMemorySessionService`, `ExecuteBashTool`, `SkillToolset`. MCP via `McpToolset` + `StreamableHTTPConnectionParams`.
+- **openai-agents (+ openai):** `SandboxAgent`, `Runner`, `UnixLocalSandboxClient`. MCP via `MCPServerStreamableHttp`.
+- **OpenTelemetry / Prometheus:** `tracing.py` TracerProvider; `audit.py` GenAI spans/events; `metrics.py` `/metrics`.
 
 ## Implementation Notes
 
-- **DeepAgents model routing:** `_resolve_model()` checks `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_BEDROCK` env vars to construct the appropriate `ChatAnthropic`, `ChatAnthropicVertex`, or Bedrock chat model instance.
-- **DeepAgents thinking extraction:** After each `AIMessage` in the stream, the adapter iterates `msg.content` looking for entries with `type="thinking"`. Each thinking block's text is yielded as a `ThinkingDeltaEvent`, followed by a `ContentBlockStopEvent` to trigger thinking buffer flush in `EventLogger`.
-- **DeepAgents streaming:** Uses `astream(stream_mode="messages")` which yields `AIMessageChunk` and `ToolMessage` objects. Content blocks may be dicts or objects; the adapter handles both.
-- **Gemini bash:** Monkey-patches `run_async` to force confirmation and shell wrapping via `shlex.quote`.
+- **DeepAgents model routing:** `_resolve_model()` checks `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_BEDROCK`.
+- **DeepAgents thinking:** From `AIMessage` content / content_blocks; yield `ThinkingDeltaEvent` then `ContentBlockStopEvent`.
+- **DeepAgents streaming:** `astream(stream_mode="messages")`.
+- **Gemini bash:** Monkey-patches `run_async` for confirmation and `bash -c` wrapping.
 - **OpenAI init:** One-time verbose logging and tracing disable.
-- **Containerfile:** Multi-stage build — builder installs hashed requirements into target site-packages; runtime copies site-packages, app `src`, sets user `agent`, `catatonit` entrypoint, Uvicorn CMD on port 8080. Node.js runtime and `@anthropic-ai/claude-code` binary removed (no longer needed).
-- **Makefile:** `uv sync` targets, `requirements` generates hashed per-arch requirements; `rpm-lockfile` regenerates RPM lock via fedora tool image; `image` builds local container.
+- **MCP Secret headers:** Read first file (sorted by name) under `/var/secrets/mcp/<secretName>/` — see `what/configuration.md` (current behavior; stricter path was an orphan promise).
+- **Containerfile:** Multi-stage hermetic Python/RPM build; `oc`/`kubectl` from ose-cli stage; no ripgrep install; user `agent`; `catatonit`; Uvicorn on 8080.
 - **Tests / evals:** HTTP clients target `POST /v1/agent/run` (see `tests/` and `evals/`).

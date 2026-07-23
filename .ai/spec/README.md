@@ -25,8 +25,8 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 
 | Spec | Description |
 |------|-------------|
-| [project-structure.md](how/project-structure.md) | Module map, entry points, naming conventions, dependency organization |
-| [provider-architecture.md](how/provider-architecture.md) | Per-provider SDK wrappers (DeepAgents/Gemini/OpenAI), data flow, key abstractions, container build |
+| [project-structure.md](how/project-structure.md) | Entry points, naming conventions, dependency extras (package tree in AGENTS.md) |
+| [provider-architecture.md](how/provider-architecture.md) | Data flow, abstractions, SDK integration points, implementation notes |
 
 ## Scope
 
@@ -58,6 +58,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | `what/provider-contract.md` | `how/provider-architecture.md` |
 | `what/configuration.md` | `how/provider-architecture.md` (container build, implementation notes) |
 | `what/health-probes.md` | `how/project-structure.md` (health.py entry) |
+| `what/audit-logging.md` | `how/provider-architecture.md` (observability integration) |
 
 ## Conventions
 

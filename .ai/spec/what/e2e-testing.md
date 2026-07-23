@@ -18,6 +18,8 @@ error handling without flaky live LLM assertions.
 | Run timeout envelope | `timeout_ms=1` on a long-running query → HTTP 200, `success=false` | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) |
 | Context reaches the model | **Structured echo**: prepared `context` (`targetNamespaces`, `previousAttempts`, `approvedOption`) + `outputSchema`; model echoes back as response fields (`namespaces`, `firstFailureReason`, `approvedTitle`/`rootCause`) | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) |
 | Structured output / skills | Existing scenarios unchanged | [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [skills.feature](../../../tests/e2e/features/skills.feature) |
+| MCP connectivity | Live/container scenarios for MCP wiring | [mcp.feature](../../../tests/e2e/features/mcp.feature) |
+| Reasoning config | Live/container scenarios | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) |
 
 Context proof is **semantic** (model output reflects injected context), not
 inspection of the composed `[context]` prefix string. Exact prefix formatting
@@ -30,8 +32,13 @@ belongs in unit tests.
 | Exact `[context]` prefix text | Deterministic formatting; no need for live LLM | [test_routes.py](../../../tests/test_routes.py) (`_format_context_prefix`) |
 | Empty provider result (run-api rule 23) | Requires mocked provider; unreliable with live models | [test_routes.py](../../../tests/test_routes.py) |
 | `/ready` 503 when credentials missing | Needs deliberately misconfigured runtime; covered without live network | [test_ready.py](../../../tests/test_ready.py) |
-| Readiness rule R3 (MCP reachability) | MCP not implemented | — |
 | HTTP 500 on adversarial schema (rule 22) | Live suite asserts HTTP 200 + envelope instead | [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [test_routes.py](../../../tests/test_routes.py) |
+
+### Unimplemented / uncovered
+
+| Area | Reason | Artifact |
+|------|--------|----------|
+| Readiness rule R3 (MCP reachability) | Not implemented; no tracked story | — |
 
 ### Design decisions
 
@@ -133,6 +140,8 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) | run-api, health-probes | Probes, timeout, context echo |
 | [structured_output.feature](../../../tests/e2e/features/structured_output.feature) | run-api, provider-contract | JSON schema, text fallback, adversarial schema |
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, nonskill query |
+| [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration, health-probes | MCP connectivity wiring, credential/header resolution, `/health` |
+| [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning/thinking config passthrough |
 
 Unit tests: [test_routes.py](../../../tests/test_routes.py),
 [test_health.py](../../../tests/test_health.py),

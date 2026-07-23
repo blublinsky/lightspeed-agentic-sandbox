@@ -36,6 +36,14 @@ graph TD
         Health["health.py<br/>GET /health, GET /ready"]
     end
 
+    subgraph "Configuration & Cross-Cutting"
+        Config["config.py<br/>resolve_sdk()<br/>env mapping"]
+        MCP["mcp.py<br/>parse_mcp_servers()"]
+        Audit["audit.py<br/>AuditLogger"]
+        Metrics["metrics.py<br/>Prometheus /metrics"]
+        Tracing["tracing.py<br/>TracerProvider"]
+    end
+
     subgraph "Provider Abstraction"
         Factory["factory.py<br/>create_provider()"]
         Types["types.py<br/>AgentProvider ABC<br/>ProviderEvent union<br/>ProviderQueryOptions"]
@@ -48,12 +56,17 @@ graph TD
         OpenAIP["openai.py<br/>OpenAIProvider"]
     end
 
+    App --> Config
     App --> Factory
     App --> Router
+    App --> Metrics
+    App --> Tracing
     Router --> Query
     App --> Health
     Query --> Types
     Query --> Logger
+    Query --> MCP
+    Query --> Audit
     Factory -->|lazy import| DeepAgentsP
     Factory -->|lazy import| GeminiP
     Factory -->|lazy import| OpenAIP
@@ -113,7 +126,7 @@ graph TD
     subgraph "Container Image"
         direction TB
         Base["UBI 9 base"]
-        Sys["System packages<br/>(bash, git, oc, kubectl, ripgrep, catatonit)"]
+        Sys["System packages<br/>(bash, git, oc, kubectl, catatonit)"]
         Py["Python 3.12 + site-packages<br/>(FastAPI, provider SDKs)"]
         AppSrc["Application source<br/>/app/src/"]
         SkillMount["Skills mount<br/>/app/skills/ (read-only)"]
@@ -134,10 +147,10 @@ The container runs as a non-root `agent` user. `catatonit` is the init process (
 
 ## Key Decisions
 
-- **One provider per pod:** The provider is selected at startup via `LIGHTSPEED_AGENT_PROVIDER`. This keeps pods simple and disposable — the operator chooses which provider to target when creating the pod.
+- **One provider per pod:** The provider is selected at startup via `LIGHTSPEED_PROVIDER` (mapped to an SDK name by `config.resolve_sdk()`). This keeps pods simple and disposable — the operator chooses which provider to target when creating the pod.
 
 - **Thin adapters over abstraction layers:** Provider modules map SDK events to a normalized union type but do not re-implement SDK behavior. This keeps maintenance cost proportional to SDK surface, not to a custom abstraction.
 
 - **Lazy SDK imports:** Provider SDK packages are optional extras. The factory uses `match`-based lazy imports so the base package loads without any vendor SDK installed.
 
-- **Hermetic builds:** All dependencies (Python wheels, RPMs, external binaries) are declared in lockfiles and prefetched before the build starts. This ensures reproducible, auditable images.
+- **Hermetic builds:** Python wheels and RPMs are declared in lockfiles and prefetched. Some CLI binaries (`oc`, `kubectl`) are copied from Red Hat image stages rather than a generic binary lockfile.
