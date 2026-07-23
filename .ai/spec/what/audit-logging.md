@@ -98,7 +98,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Configuration
 
-20. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, OTEL endpoint). When audit is disabled (`LIGHTSPEED_AUDIT_ENABLED` false/unset per implementation), the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the request path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
+20. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, OTEL endpoint). Audit is enabled only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"` after strip and lowercasing (same parsing as `configuration.md` / `app.py`). Unset and every other value disable audit. When audit is disabled, the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the request path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
 
 21. When an OTEL endpoint is configured (passed from operator), the sandbox MUST configure an OTLP exporter targeting that endpoint. When absent, a no-op OTLP exporter is used. The stdout exporter always emits OTLP JSON when audit is enabled.
 

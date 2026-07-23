@@ -188,6 +188,7 @@ starts, with no network access during the build itself.
 | `rpms.lock.yaml` | Resolved RPM lockfile | `make rpm-lockfile` |
 | `ubi.repo` | UBI 9 repo definitions for RPM resolution | Rarely changes |
 | `artifacts.lock.yaml` | Generic binary lockfile (may be empty; `oc`/`kubectl` come from image stages) | Edit manually when used |
+
 ### Bumping dependencies
 
 ```bash
