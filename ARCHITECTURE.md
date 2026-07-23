@@ -126,7 +126,7 @@ graph TD
     subgraph "Container Image"
         direction TB
         Base["UBI 9 base"]
-        Sys["System packages<br/>(bash, git, oc, kubectl, ripgrep, catatonit)"]
+        Sys["System packages<br/>(bash, git, oc, kubectl, catatonit)"]
         Py["Python 3.12 + site-packages<br/>(FastAPI, provider SDKs)"]
         AppSrc["Application source<br/>/app/src/"]
         SkillMount["Skills mount<br/>/app/skills/ (read-only)"]

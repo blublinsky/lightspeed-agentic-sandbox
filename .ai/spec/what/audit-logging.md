@@ -26,10 +26,10 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 | `gen_ai.provider.name` | Required | Provider name (e.g., `anthropic`, `openai`, `google`) |
 | `gen_ai.usage.input_tokens` | Recommended | Input token count for this operation |
 | `gen_ai.usage.output_tokens` | Recommended | Output token count for this operation |
-| `agenticrun.uid` | Required (custom) | AgenticRun CR metadata.uid as received (hyphens preserved) — cross-trace correlation key |
+| `agenticrun.uid` | Recommended (custom) | AgenticRun CR metadata.uid as received via `x-agenticrun-uid` (hyphens preserved) when the operator sends it — cross-trace correlation key |
 | `server.address` | Recommended | LLM API endpoint hostname |
 
-5. `agenticrun.uid` MUST be received from the operator's context (via `traceparent` header propagation and/or as a request parameter on `/v1/agent/run`). The sandbox MUST propagate it as a span attribute on all spans.
+5. When `x-agenticrun-uid` (or equivalent request context) is present, the sandbox MUST propagate that value as the `agenticrun.uid` span attribute on spans it creates. When absent, the sandbox MUST NOT invent a uid.
 
 ### GenAI Attributes — Tool Span
 
