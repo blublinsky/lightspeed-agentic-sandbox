@@ -51,7 +51,7 @@ Returns HTTP 200 when all checks pass, HTTP 503 when any check fails. Not under 
 | `gemini` | `https://generativelanguage.googleapis.com/` |
 | `openai` | `OPENAI_BASE_URL` or `https://api.openai.com/` |
 
-**R3 — MCP server reachability.** Same pattern as R2, for each configured MCP endpoint. [PLANNED: when MCP support lands]
+**R3 — MCP server reachability.** Not implemented. Previously marked "[PLANNED: when MCP support lands]" but MCP runtime shipped (OLS-3185 / OLS-3443) without an R3 story (OLS-3046 / OLS-3060 closed with R1/R2 only). No current MUST. File a story before specifying R3 again.
 
 ## Recommended Probe Config
 
@@ -96,4 +96,4 @@ Cross-reference: probes are **not** under `/v1/agent` → `run-api.md` rules 2, 
 | [test_ready.py](../../../tests/test_ready.py) | R1 (credential env per backend), R2 (endpoint probe semantics), healthy/unhealthy `/ready` responses | Mocks `probe_provider_endpoint` for route tests; does not hit live provider URLs |
 | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Readiness/liveness) | Liveness; readiness when container env satisfies R1 and R2 | E2e covers **happy path** only (200 on `/ready`); negative 503 scenarios stay unit-tested unless spike adds a deliberate misconfigured container |
 
-R3 (MCP reachability) has no tests until MCP support lands.
+R3 (MCP reachability) is not implemented; no tracked story.

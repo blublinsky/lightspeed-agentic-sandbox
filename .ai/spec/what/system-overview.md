@@ -14,17 +14,17 @@ The lightspeed-agentic-sandbox is a multi-provider agent runtime that runs insid
 
 ### Component Inventory
 
-4. The system has four major components: the HTTP API layer (routes, request/response models), the provider abstraction (factory, query options, event model), the provider adapters (DeepAgents/Anthropic, Gemini, OpenAI), and the health probes (liveness, readiness).
+4. The system has these major components: HTTP API layer (routes, models), provider abstraction (factory, query options, event model), provider adapters (DeepAgents, Gemini, OpenAI), configuration mapping (`config.py`), MCP resolution (`mcp.py`), health probes, and observability (`audit.py`, `metrics.py`, `tracing.py`).
 
-5. Component behavioral rules are specified in dedicated files: `run-api.md` (HTTP layer), `provider-contract.md` (provider abstraction and adapters), `configuration.md` (env vars, deployment, build), `health-probes.md` (liveness and readiness endpoints).
+5. Component behavioral rules: `run-api.md`, `provider-contract.md`, `configuration.md`, `health-probes.md`, `audit-logging.md`, `e2e-testing.md`.
 
 ### Lifecycle
 
-6. At startup, the process constructs a single provider instance via the factory, builds an API router with environment-resolved defaults, and serves on port 8080.
+6. At startup, the process runs `resolve_sdk()` / reasoning config parse, constructs a provider via the factory, builds the API router, registers health and metrics routes, initializes tracing in the app lifespan, and serves on port 8080.
 
 7. The provider is selected once at startup via `LIGHTSPEED_PROVIDER` and cannot change during the process lifetime.
 
-8. Model resolution happens once at router construction time via provider-specific environment variables, with a package-level default fallback.
+8. Model resolution uses canonical `LIGHTSPEED_MODEL` (mapped to SDK-specific model env vars), with package default fallback.
 
 ### Integration Boundaries
 
@@ -40,7 +40,7 @@ The lightspeed-agentic-sandbox is a multi-provider agent runtime that runs insid
 |---|---|---|---|
 | `LIGHTSPEED_PROVIDER` | string | `anthropic` | Selects the provider backend (resolves to `deepagents`, `gemini`, or `openai` SDK) |
 | `LIGHTSPEED_SKILLS_DIR` | string | `/app/skills` | Skill root and provider working directory |
-| `ANTHROPIC_MODEL` / `GEMINI_MODEL` / `OPENAI_MODEL` | string | `claude-opus-4-6` | Per-provider model override |
+| `LIGHTSPEED_MODEL` | string | `claude-opus-4-6` | Canonical model identifier (mapped to SDK-specific env vars per provider) |
 
 See `configuration.md` for the full environment variable reference.
 
