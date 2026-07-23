@@ -70,6 +70,7 @@ Before changing code, read the relevant spec:
 | /run endpoint | [run-api.md](.ai/spec/what/run-api.md) |
 | Health probes | [health-probes.md](.ai/spec/what/health-probes.md) |
 | Deployment, env vars, or defaults | [configuration.md](.ai/spec/what/configuration.md) |
+| Audit / OTel / metrics | [audit-logging.md](.ai/spec/what/audit-logging.md) |
 | E2E harness or BDD scenarios | [e2e-testing.md](.ai/spec/what/e2e-testing.md) |
 
 Specs capture invariants, design decisions, and known quirks that the code
@@ -107,10 +108,16 @@ make eval-report                       # write evals/report.json
 
 ```text
 src/lightspeed_agentic/
-├── app.py                # FastAPI entry point, mounts router at /v1/agent
-├── factory.py            # create_provider(name) — receives SDK name from config.resolve_sdk()
-├── logging.py            # Event logging helpers for query flows
-├── tools.py              # Shared tool/skill utilities and defaults
+├── app.py                # FastAPI entry; resolve_sdk, provider, router, metrics, tracer lifespan
+├── config.py             # LIGHTSPEED_* → SDK env mapping; resolve_sdk(); reasoning parse
+├── factory.py            # create_provider(name) — SDK name from config.resolve_sdk()
+├── health.py             # GET /health, GET /ready
+├── mcp.py                # parse_mcp_servers(); header resolution
+├── audit.py              # AuditLogger GenAI spans/events
+├── metrics.py            # Prometheus /metrics
+├── tracing.py            # TracerProvider, traceparent helpers
+├── logging.py            # EventLogger (debug thinking buffer)
+├── tools.py              # DEFAULT_ALLOWED_TOOLS only
 ├── types.py              # Provider events, query options, AgentProvider ABC
 ├── providers/
 │   ├── deepagents.py     # deepagents (langchain-anthropic) adapter
@@ -130,8 +137,8 @@ src/lightspeed_agentic/
 | Streaming | `astream(stream_mode="messages")` | `StreamingMode.SSE` | `Runner.run_streamed()` |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
-discovery; shared path logic belongs in `tools.py`, not in duplicated provider
-helpers.
+discovery; `tools.py` holds the shared allowlist constant only — do not invent
+shared path helpers there.
 
 ## Code Conventions
 
@@ -225,14 +232,18 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `LIGHTSPEED_PROVIDER_PROJECT` | Cloud project ID (Vertex) |
 | `LIGHTSPEED_PROVIDER_REGION` | Cloud region (Vertex, Bedrock) |
 | `LIGHTSPEED_PROVIDER_API_VERSION` | API version (Azure) |
-| `LIGHTSPEED_CAPTURE_CONTENT` | Opt-in LLM content capture for audit (gen_ai.completion/reasoning_content) |
+| `LIGHTSPEED_AUDIT_ENABLED` | Enable audit span exporters / choice events (see audit-logging.md) |
+| `LIGHTSPEED_CAPTURE_CONTENT` | Opt-in content attributes on choice events |
+| `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs |
 | `LIGHTSPEED_REASONING_CONFIG` | JSON object with reasoning/thinking params, parsed at startup, passed to adapters |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root mounted by the FastAPI app, default `/app/skills` |
 | `ANTHROPIC_MODEL` | Default Anthropic model for query routes |
 | `GEMINI_MODEL` | Default Gemini model for query routes |
 | `OPENAI_MODEL` | Default OpenAI model for query routes |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible endpoint override |
+| `CLAUDE_CODE_USE_BEDROCK` | Set by config mapping for Bedrock → DeepAgents |
 | `CLAUDE_CODE_USE_VERTEX` | When set to `1`, DeepAgents uses Vertex-backed Anthropic (`ChatAnthropicVertex`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint for traces |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex project for Anthropic via Vertex |
 | `CLOUD_ML_REGION` | Vertex region for Anthropic via Vertex (default `us-east5`) |
 | `EVAL_SERVER_URLS` | Provider-to-URL map exported by `evals/run.sh` for eval pytest fixtures |
