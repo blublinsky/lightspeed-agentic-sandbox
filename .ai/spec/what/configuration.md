@@ -36,7 +36,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     |---|---|---|---|
     | `anthropic` | *(derived)* | `deepagents` | `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` |
     | `vertex` | `anthropic` | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_BASE_URL` |
-    | `vertex` | `google` | `gemini` | `GEMINI_MODEL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_APPLICATION_CREDENTIALS` |
+    | `vertex` | `google` | `gemini` | `GEMINI_MODEL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
     | `vertex` | `openai` | `openai` | `OPENAI_MODEL`, `OPENAI_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS` |
     | `openai` | *(derived)* | `openai` | `OPENAI_MODEL` |
     | `azure` | *(derived)* | `openai` | `OPENAI_MODEL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` |
@@ -74,21 +74,23 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 16. **Python load path.** Runtime sets process environment so application source under `/opt/lightspeed/src` and installed site-packages are on `PYTHONPATH` as defined in the image.
 
-17. **Hermetic / Konflux build inputs.** Release images are built with network isolation after prefetch: per-architecture Python requirements files with hashes, RPM lockfile input, and generic binary lockfile for oc/ripgrep. Regeneration of those artifacts is via the project automation commands (see implementation notes in `how/provider-architecture.md`).
+17. **Hermetic / Konflux build inputs.** Release images are built with network isolation after prefetch: per-architecture Python requirements files with hashes and RPM lockfile input. The generic binary artifacts lockfile may be empty when binaries are copied from other image stages (e.g. `oc`/`kubectl` from `ose-cli`). Regeneration of Python/RPM artifacts is via project automation commands (see `how/provider-architecture.md`).
 
 18. **Non-hermetic fallback.** When prefetch directories are absent, the container build recipe may fetch selected binaries from external URLs for developer builds.
 
-19. **System packages — minimum expectations.** Runtime image includes Bash, Git, OpenShift CLI (`oc`), Kubernetes CLI (`kubectl`), ripgrep, and supporting OS utilities for debugging and archives per the container recipe.
+19. **System packages — minimum expectations.** Runtime image includes Bash, Git, OpenShift CLI (`oc`), Kubernetes CLI (`kubectl`), and supporting OS utilities per the container recipe. Ripgrep is not currently installed in the image.
 
-20. **MCP server configuration.** When `LIGHTSPEED_MCP_SERVERS` is set, the sandbox MUST parse it as a JSON array of MCP server entries. Each entry has the shape `{"name": string, "url": string, "timeout": int, "headers": [{"name": string, "source": string, "secretName"?: string}]}`. `secretName` is REQUIRED when `source` is `Secret`; the sandbox MUST reject entries where `source` is `Secret` and `secretName` is missing or empty. The sandbox MUST build SDK-native MCP client configs from this array and pass them into provider adapters via `ProviderQueryOptions.mcp_servers` (see `provider-contract.md`). When the env var is absent or empty, no MCP servers are configured.
+20. **MCP server configuration.** When `LIGHTSPEED_MCP_SERVERS` is set, the sandbox MUST parse it as a JSON array of MCP server entries. Each entry has the shape `{"name": string, "url": string, "timeout": int, "headers": [{"name": string, "source": string, "secretName"?: string}]}`. When `source` is `Secret` and `secretName` is missing, empty, or not a string, the sandbox MUST skip that header (warn) and continue — it MUST NOT reject the entire server entry. The sandbox MUST build SDK-native MCP client configs from this array and pass them into provider adapters via `ProviderQueryOptions.mcp_servers` (see `provider-contract.md`). When the env var is absent or empty, no MCP servers are configured.
 
 21. **MCP header resolution.** For each header in an MCP server entry, the sandbox MUST resolve the value based on the `source` field:
 
     | `source` | Resolution |
     |---|---|
     | `ServiceAccountToken` | Read the projected SA token from `/var/run/secrets/kubernetes.io/serviceaccount/token` and format as `Bearer <token>`. |
-    | `Secret` | Read the file at `/var/secrets/mcp/<secretName>/<secretName>` where `secretName` is the required `secretName` field on the header entry. The path is fully deterministic — no directory listing or "first file" heuristic. |
+    | `Secret` | List files under `/var/secrets/mcp/<secretName>/`, sort by name, and read the first regular file. If the directory is missing, empty, unreadable, or `secretName` is invalid, skip the header (warn). Path traversal outside the mount root MUST be rejected. |
     | `Client` | Skip — not resolved by the sandbox. Reserved for future client-passthrough flows. |
+
+    Note: A stricter deterministic path (`.../<secretName>/<secretName>`) and reject-on-missing-`secretName` were written into this spec via review-only commit `1508589` without code or a follow-up ticket (orphan promise). Current behavior is first-file as above.
 
 22. **MCP transport.** The sandbox MUST use Streamable HTTP as the MCP transport when connecting to remote MCP servers. SSE transport (deprecated in MCP spec since 2025-03-26) MUST NOT be used for new connections.
 
