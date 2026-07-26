@@ -122,14 +122,14 @@ mcp==1.27.2 \
 numpy==2.4.4 \
     --hash=sha256:66234d4f159159cd5a90d679988d7b051b4d72851aca0ddffdd2a907a209e07e \
     --hash=sha256:772c1fc3e87b4b95d8ec0c2390541b3c3b04469b31f7991716d0b46758362532
-openai==2.41.1 \
-    --hash=sha256:ebaf9e2016e193ca5b417619f2b860dd31453e239667711b4f916fdb1c75e04e
 opentelemetry-api==1.42.1 \
     --hash=sha256:11eafcf5dae7858122d69da01695f0989e2c71dd525e24427ced799b8860ef60
 opentelemetry-exporter-otlp-proto-common==1.42.1 \
     --hash=sha256:e2dacf018525703ed19630caac157ef31271358e59dac9d9fd063154aff24b70
 opentelemetry-exporter-otlp-proto-grpc==1.42.1 \
     --hash=sha256:231914f610c1c4a7ba988036c663d20afdfe458a3ac0267ae94c970094668def
+opentelemetry-exporter-otlp-proto-http==1.42.1 \
+    --hash=sha256:5566eb7667c67ce35de55920675f432ac51ce4d2f75ffd7a3ff7903c72695157
 opentelemetry-proto==1.42.1 \
     --hash=sha256:429902838bababd11e1c975d743ea3313cb03a9000c4bf124d80a3ba7456fd26
 opentelemetry-sdk==1.42.1 \

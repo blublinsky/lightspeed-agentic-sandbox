@@ -15,8 +15,15 @@ flit-core==3.12.0
     #   pathspec
     #   pyproject-metadata
     #   wheel
+hatch-fancy-pypi-readme==25.1.0
+    # via openai
+hatchling==1.26.3
+    # via
+    #   hatch-fancy-pypi-readme
+    #   openai
 hatchling==1.31.0
     # via
+    #   hatch-fancy-pypi-readme
     #   langchain-anthropic
     #   langchain-aws
     #   langchain-google-vertexai

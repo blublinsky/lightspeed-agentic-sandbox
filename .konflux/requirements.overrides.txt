@@ -6,3 +6,7 @@
 # to the latest RHOAI version (2.13.4), but that requires pydantic-core 2.46.4.
 # Pin pydantic to 2.13.1 which matches pydantic-core 2.46.1 exactly.
 pydantic==2.13.1
+
+# RHOAI's newest openai wheel is 2.41.1, but openai-agents>=0.18.2 imports
+# PromptCacheOptions (added in openai>=2.45.0). Force the PyPI-resolved pin.
+openai==2.48.0
