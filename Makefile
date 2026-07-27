@@ -12,7 +12,7 @@ $(E2E_EXTRA_TARGETS):
 endif
 endif
 
-.PHONY: install install-all lock test lint format mypy verify eval eval-report e2e image clean help \
+.PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements eval eval-report e2e image clean help \
        requirements bump-deps rpm-lockfile konflux-requirements
 
 help: ## Show this help
@@ -41,10 +41,13 @@ format: ## Auto-format with ruff
 mypy: ## Run mypy against application package
 	$(UV) run mypy src/lightspeed_agentic
 
-verify: ## Run non-mutating formatting, lint, and type checks
+verify: verify-hermetic-requirements ## Run non-mutating formatting, lint, and type checks
 	$(UV) run ruff format . --check
 	$(UV) run ruff check .
 	$(UV) run mypy src/lightspeed_agentic
+
+verify-hermetic-requirements: ## Verify hermetic build hash files are in sync with uv.lock
+	bash scripts/verify_hermetic_requirements.sh
 
 image: ## Build container image for local development and evals
 	$(CONTAINER_RUNTIME) build -t $(IMAGE) .
