@@ -1,0 +1,64 @@
+scenarios:
+  envvar_missing:
+    request: "Diagnose CrashLoopBackOff in warehouse-ops"
+    expected_keywords:
+      - "CrashLoopBackOff"
+      - "DEPLOY_ENV"
+
+  batch_failure:
+    request: "Diagnose job failure"
+    expected_keywords:
+      - "job"
+      - "fail"
+
+  storage_binding:
+    request: "Diagnose PVC issue"
+    expected_keywords:
+      - "PersistentVolumeClaim"
+      - "bound"
+
+  namespace_pod_count:
+    request: "Count pods in fleet-alpha"
+    expected_keywords:
+      - "fleet-alpha"
+      - "pod"
+
+  scheduled_outage_detection:
+    request: "Detect API outage window"
+    expected_keywords:
+      - "outage"
+      - "03:00"
+
+  periodic_failure_window:
+    request: "Detect periodic failure"
+    expected_keywords:
+      - "failure"
+      - "03:00"
+
+  config_drift_analysis:
+    request: "Diagnose connection refused"
+    expected_keywords:
+      - "connection refused"
+      - "config"
+
+  readiness_probe_diagnosis:
+    request: "Diagnose readiness probe failure"
+    expected_keywords:
+      - "readiness"
+      - "probe"
+
+  ingress_rule_mismatch:
+    request: "Diagnose NetworkPolicy blocking"
+    expected_keywords:
+      - "NetworkPolicy"
+      - "traffic"
+
+  oom:
+    request: "Diagnose OOMKilled"
+    expected_keywords:
+      - "OOMKilled"
+
+  wrong_networkpolicy:
+    request: "Diagnose and fix NetworkPolicy"
+    expected_keywords:
+      - "NetworkPolicy"
