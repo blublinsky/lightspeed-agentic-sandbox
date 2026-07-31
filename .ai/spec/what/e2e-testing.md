@@ -142,10 +142,130 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, nonskill query |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration, health-probes | MCP connectivity wiring, credential/header resolution, `/health` |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning/thinking config passthrough |
+| [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
 
 Unit tests: [test_routes.py](../../../tests/test_routes.py),
 [test_health.py](../../../tests/test_health.py),
 [test_ready.py](../../../tests/test_ready.py).
+
+## Troubleshooting scenario tests (OLS-3739)
+
+Cluster-level BDD tests that exercise the full AgenticRun lifecycle against
+real OpenShift clusters with injected broken states. These tests verify the
+**quality and correctness of sandbox output** — phase transition testing is the
+operator's responsibility (see lightspeed-agentic-operator specs).
+
+### Scope
+
+- **In scope:** BDD scenarios that inject broken cluster state, create
+  AgenticRun CRs via the `kubernetes` Python client, wait for completion, read
+  AnalysisResult/ExecutionResult/VerificationResult CRs and sandbox pod logs,
+  assert domain-keyword presence, and run an LLM judge for output relevance.
+- **Out of scope:** Phase transition assertions (operator product-e2e),
+  behavioral correctness of execution fixes (future work).
+
+### Prerequisites
+
+- Running sandbox service (same as existing e2e)
+- Operator deployed on a live OpenShift cluster
+- `kubernetes` Python client (new test dependency)
+- KUBECONFIG with permissions to create/delete namespaces, deployments, and
+  AgenticRun CRs
+- LLM provider credentials (same as existing e2e)
+
+### Scenarios
+
+Troubleshooting scenario scripts live in `scenarios/troubleshooting/` at the
+repository root. Each scenario directory contains `setup.sh` (inject broken
+state), `cleanup.sh` (restore). A shared `scenario_metadata.yaml` at the
+`scenarios/troubleshooting/` root maps scenario IDs to AgenticRun request text
+and expected domain keywords.
+
+| Scenario ID | AgenticRun request | Expected keywords |
+|---|---|---|
+| `envvar_missing` | Diagnose CrashLoopBackOff in warehouse-ops | `CrashLoopBackOff`, `DEPLOY_ENV` |
+| `batch_failure` | Diagnose job failure | `job`, `fail` |
+| `storage_binding` | Diagnose PVC issue | `PersistentVolumeClaim`, `bound` |
+| `namespace_pod_count` | Count pods in fleet-alpha | `fleet-alpha`, `pod` |
+| `scheduled_outage_detection` | Detect API outage window | `outage`, `03:00` |
+| `periodic_failure_window` | Detect periodic failure | `failure`, `03:00` |
+| `config_drift_analysis` | Diagnose connection refused | `connection refused`, `config` |
+| `readiness_probe_diagnosis` | Diagnose readiness probe failure | `readiness`, `probe` |
+| `ingress_rule_mismatch` | Diagnose NetworkPolicy blocking | `NetworkPolicy`, `traffic` |
+| `oom` | Diagnose OOMKilled | `OOMKilled` |
+| `wrong_networkpolicy` | Diagnose and fix NetworkPolicy | `NetworkPolicy` |
+
+Setup/cleanup scripts run on the test host via `subprocess` — they are cluster
+manipulation scripts using `oc`/`kubectl`, not Python.
+
+### BDD structure
+
+Feature file: `tests/e2e/features/troubleshooting.feature`
+
+Scenario outline parametrized over the 11 scenarios. Each scenario:
+1. Injects broken cluster state via `setup.sh`
+2. Creates AgenticRun CR via `kubernetes.client.CustomObjectsApi`
+3. Polls until AgenticRun reaches `Completed` phase (or timeout)
+4. Reads AnalysisResult/ExecutionResult/VerificationResult CRs
+5. Reads sandbox pod logs via `kubernetes.client.CoreV1Api`
+6. Asserts expected domain keywords in result content
+7. Calls LLM judge to verify output relevance
+8. Runs `cleanup.sh` (always, even on failure)
+
+Step definitions extend the existing `tests/e2e/steps/` modules. New fixtures
+in `tests/e2e/conftest.py`:
+- `k8s_client` — authenticated `CustomObjectsApi` from KUBECONFIG
+- `k8s_core_client` — `CoreV1Api` for pod log retrieval
+- `scenario_cleanup` — yield fixture ensuring cleanup.sh runs
+
+### LLM judge
+
+A utility module that takes scenario context (ID, request, expected keywords)
+plus sandbox output (analysis/execution/verification results, pod logs) and
+asks the configured LLM whether the output correctly identifies and addresses
+the scenario's problem. Returns pass/fail with reasoning.
+
+- Model configurable via `E2E_JUDGE_MODEL` env var
+- Defaults to the same provider/model that ran the AgenticRun
+- Uses provider credentials already available in the e2e environment
+
+### Run mode
+
+Cluster e2e is a separate entry point from the existing container/prow-host
+modes. It requires both the sandbox service AND a live cluster with operator.
+
+```bash
+make e2e-cluster <provider>
+# e.g.: make e2e-cluster openai-agents
+```
+
+`scripts/e2e-cluster.sh` handles environment setup, runs only the
+troubleshooting feature file, and collects artifacts.
+
+### Environment exports
+
+| Variable | Set by | Purpose |
+|----------|--------|---------|
+| `KUBECONFIG` | User/CI | Cluster access for kubernetes client |
+| `E2E_JUDGE_MODEL` | Optional | Override LLM judge model (default: run provider model) |
+| `E2E_SCENARIOS_DIR` | `e2e-cluster.sh` | Path to scenario scripts (default: `scenarios/troubleshooting/`) |
+| `E2E_OPERATOR_NAMESPACE` | `e2e-cluster.sh` | Namespace where operator is deployed (default: `openshift-lightspeed`) |
+
+### Flake policy
+
+- Scenario setup/cleanup scripts MUST be idempotent
+- AgenticRun polling uses configurable timeout (default: 20m per scenario)
+- LLM judge assertions are logged but SHOULD NOT cause hard test failure in
+  initial rollout — keyword assertions are the primary gate
+- Cleanup runs in a finally/yield block regardless of test outcome
+
+### Future work
+
+- [PLANNED] **Behavioral correctness assertions:** verify that ExecutionResult
+  actually attempted a fix (e.g., patched a resource, adjusted limits) and
+  VerificationResult confirmed or denied the fix worked
+- [PLANNED] **LLM judge as hard gate:** once confidence in judge reliability is
+  established, promote judge pass/fail to a hard test assertion
 
 ## Commands
 
@@ -153,5 +273,6 @@ Unit tests: [test_routes.py](../../../tests/test_routes.py),
 make install-all          # providers + e2e extras (first time)
 make test                 # unit only; no credentials
 make e2e openai-agents    # live BDD, container mode
+make e2e-cluster openai-agents  # cluster BDD, troubleshooting scenarios
 E2E_SKIP_INSTALL=1 E2E_ARGS="-v" bash scripts/e2e-containers.sh --prow-host openai-agents
 ```
