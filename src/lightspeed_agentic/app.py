@@ -28,7 +28,7 @@ capture_content = os.environ.get("LIGHTSPEED_CAPTURE_CONTENT", "").strip().lower
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    init_tracer(audit_enabled=audit_enabled)
+    init_tracer()
     yield
     shutdown_tracer()
 
