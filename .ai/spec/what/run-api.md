@@ -1,8 +1,10 @@
-# Behavioral spec: HTTP run API
+# Behavioral spec: Run API
 
 Audience: AI agents (Claude). Precision over narrative.
 
 Cross-references: provider behavior and events → `provider-contract.md`. Env defaults and ports → `configuration.md`.
+
+> **[OLS-3066] Batch execution model planned.** The HTTP API (rules 1–24 below) is the current implementation. OLS-3066 replaces it with a batch entrypoint: the sandbox reads input from a ConfigMap volume mount, runs the agent, creates a Result CR via `oc`, and exits. See the "Batch Entrypoint" section at the end of this file for the target behavior. The HTTP rules below remain authoritative until OLS-3066 is implemented.
 
 ## Behavioral Rules
 
@@ -70,7 +72,8 @@ Cross-references: provider behavior and events → `provider-contract.md`. Env d
 ## Planned Changes
 
 - Operator payload may later include `llm` and `allowedTools` per target architecture docs; sandbox route does not read them today. [PLANNED: OLS-3033]
-- TLS, network policy, and ingress hardening for the sandbox service. [PLANNED: OLS-3038–OLS-3043]
+- ~~TLS, network policy, and ingress hardening for the sandbox service. [PLANNED: OLS-3038–OLS-3043]~~ No longer applicable — OLS-3066 removes the HTTP server.
+- [PLANNED: OLS-3066] **Batch execution model** replaces the HTTP API. See "Batch Entrypoint" section below.
 
 ## Verification
 
@@ -93,3 +96,47 @@ Rules **10–11** (`/health`, `/ready`) are verified under `health-probes.md`, n
 | [test_routes.py](../../../tests/test_routes.py) | 3, 5, 6, 8, 18–21, 23 | Mocked provider: `systemPrompt`, `outputSchema`, `timeout_ms`, timeout failure, empty result, text fallback |
 | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Context prefix) | 4, 7, 12–16 | Live **targetNamespaces**, **previousAttempts**, and **approvedOption** echo via structured output; exact prefix strings in [test_routes.py](../../../tests/test_routes.py) |
 | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Run error handling) | 21 | Live **timeout** only (`timeout_ms=1` → HTTP 200, `success=false`, timed-out summary). Rules 22–23 and no-500 adversarial path: `test_routes.py`, `structured_output.feature` |
+
+---
+
+## [PLANNED: OLS-3066] Batch Entrypoint
+
+Replaces the HTTP API (rules 1–24) with a batch execution model. The sandbox runs as a one-shot process: read input, run agent, write output, exit.
+
+### Behavioral Rules (Batch)
+
+B1. **No HTTP server.** The sandbox MUST NOT start a FastAPI/HTTP server. There are no routes, no probes (`/health`, `/ready`), no inbound connections. The process reads files, runs the agent, writes results, and exits.
+
+B2. **Input files.** The operator mounts a ConfigMap at `/input/` (read-only) with four keys:
+- `/input/query` — rendered prompt text (same content as the former `RunRequest.query`)
+- `/input/output-schema` — JSON schema for structured output (same as former `RunRequest.outputSchema`)
+- `/input/context` — JSON object with `targetNamespaces`, `previousAttempts`, `approvedOption`, `executionResult` (same structure as former `RunRequest.context`)
+- `/input/result-template` — pre-filled Result CR JSON with `apiVersion`, `kind`, `metadata` (name, namespace, labels, ownerReferences), and `spec` (agenticRunName, retryIndex). The sandbox fills in `status` only.
+
+B3. **Agent execution.** The sandbox reads the input files, initializes the LLM provider (same provider adapters as today — unchanged), and runs the agent with the query, output schema, and context. Tool execution (kubectl, oc) is unchanged. Skills and MCP servers are configured via environment variables and volume mounts (unchanged).
+
+B4. **Output — success path.** On successful agent completion, the sandbox MUST: (a) merge the agent's structured JSON output into the Result CR's `status` fields (options, diagnosis, actionRequired, actionsTaken, checks, summary — varies by step type), (b) set `status.conditions` to include `Started=True` and `Completed=True`, (c) run `oc create -f <result.json>` to create the CR (metadata + spec from template), (d) run `oc patch <resultCR> --type=merge --subresource=status -p '<status-json>'` to set the status, (e) exit 0.
+
+B5. **Output — agent failure path.** When the agent returns `success=false` or throws an exception during execution, the sandbox MUST still create the Result CR: set `status.failureReason` with the error message, set `status.conditions` to include `Completed=True`, and create+patch via `oc` as in rule B4. Exit 0 (the sandbox succeeded; the agent failed).
+
+B6. **Output — sandbox failure path.** When the sandbox cannot read input files, `oc create` fails, or any other infrastructure error occurs, the sandbox MUST write a human-readable error message to `/dev/termination-log` (max 4096 bytes) and exit non-zero. The operator reads the termination message from `pod.status.containerStatuses[0].state.terminated.message`.
+
+B7. **Context formatting.** The batch entrypoint MUST apply the same context prefix formatting as the current HTTP handler (rules 12–16 above): prepend targetNamespaces, attempt info, previousAttempts, and approvedOption blocks to the query text before sending to the provider.
+
+B8. **Provider selection and configuration.** Provider selection (`LIGHTSPEED_PROVIDER`, `LIGHTSPEED_MODEL`, etc.), credential loading, skills directory, MCP servers, and reasoning config are unchanged — all configured via environment variables and volume mounts on the pod spec, not via the input ConfigMap.
+
+B9. **RBAC requirements.** The sandbox ServiceAccount MUST have `create` and `patch` (with `status` subresource) permissions on `AnalysisResult`, `ExecutionResult`, `VerificationResult`, and `EscalationResult` resources in the AgenticRun namespace. `oc` authenticates using the auto-mounted SA token.
+
+### What Changes vs HTTP
+
+| Component | HTTP (current) | Batch (OLS-3066) |
+|---|---|---|
+| FastAPI server, routes, probes | Required | **Removed** |
+| LLM provider adapters | Unchanged | Unchanged |
+| Structured output / schema | Unchanged | Unchanged |
+| Tool execution (kubectl, oc) | Unchanged | Unchanged |
+| Skills, MCP servers | Unchanged | Unchanged |
+| Input source | HTTP request body | `/input/` ConfigMap mount |
+| Output destination | HTTP response body | Result CR via `oc create` + `oc patch --subresource=status` |
+| Error reporting | HTTP response with `success=false` | Result CR with `failureReason` (agent errors) or `/dev/termination-log` (sandbox errors) |
+| Dependencies added | — | Zero — `oc` is already in the image |
