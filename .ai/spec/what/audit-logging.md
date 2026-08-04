@@ -62,13 +62,14 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Single-Emission Rule
 
-12. Each audit-significant datum MUST be recorded exactly once as an OTel span or span event. Two exporters on the same TracerProvider produce two views of the same emission:
-    - **OTLP exporter** sends spans to a trace backend (when endpoint configured).
-    - **Stdout exporter** serializes the same span data as OTLP JSON to stdout (always, when audit enabled).
+12. Each audit-significant datum MUST be recorded exactly once as an OTel span or span event. Multiple exporters / processors on the same TracerProvider produce views of that single emission:
+    - **OTLP span exporter** sends spans to the collector (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set).
+    - **Stdout exporter** serializes the same span data as OTLP JSON to stdout (when audit is enabled).
+    - **Span-event → log processor** forwards the same span events as OTLP log records to the collector (when the endpoint is set **and** audit is enabled) — templog destination, not a second audit write at call sites.
 
-13. Python `logging` MUST emit only developer-debugging messages and MUST NOT re-emit data that appears in spans or span events. This collapses the current triple-emission (standard logging, JSON audit, OTEL span) into:
-    - OTel spans/events for audit (two exporters, one emission).
-    - Standard logging for developer debugging only (non-audit, non-structured).
+13. Python `logging` MUST emit developer-debugging messages and MUST NOT be used at AuditLogger call sites to re-record span/event data. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, stdlib logging is dual-shipped to stderr and OTLP (`LoggingHandler` on the root logger). The span-event → log bridge (rule 23) also emits through that same stdlib path so templog gets dual-ship without a separate OTel Logs API emit. This collapses into:
+    - OTel spans/events for audit (stdout + OTLP traces), with templog OTLP logs (and stderr) via the bridge → LoggingHandler.
+    - Standard logging for developer debugging (stderr + OTLP when the endpoint is set).
 
 ### Structured Log Format
 
@@ -98,19 +99,24 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Configuration
 
-21. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, OTEL endpoint). Audit is enabled only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"` after strip and lowercasing (same parsing as `configuration.md` / `app.py`). Unset and every other value disable audit. When audit is disabled, the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the request path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
+21. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and when OTEL is enabled also `LIGHTSPEED_AGENTICRUN_UID` / `LIGHTSPEED_AGENTICRUN_STEP`). Audit is enabled only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"` after strip and lowercasing (same parsing as `configuration.md` / `app.py`). Unset and every other value disable audit. When audit is disabled, the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the request path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
 
-22. When an OTEL endpoint is configured (passed from operator), the sandbox MUST configure an OTLP exporter targeting that endpoint. When absent, a no-op OTLP exporter is used. The stdout exporter always emits OTLP JSON when audit is enabled.
+22. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured (passed from the operator), the sandbox MUST configure OTLP exporters for **both** traces and logs targeting that endpoint. The span-event → log processor MUST be attached only when the endpoint is set **and** audit is enabled (`LIGHTSPEED_AUDIT_ENABLED`), matching the stdout audit exporter gate. When the endpoint is absent, no OTLP exporters and no span-event log forwarding. The stdout span exporter emits OTLP JSON when audit is enabled.
 
-### OTLP Log Emission (Templog) [PLANNED: OLS-3515]
+### OTLP Log Emission (Templog) [OLS-3515]
 
-23. [PLANNED: OLS-3515] When the OTLP log endpoint environment variable is set (wired by the lightspeed-operator when `spec.templog` is enabled), the sandbox MUST also emit audit span data as OTLP log records to that endpoint. This is in addition to the stdout and OTLP trace exporters.
+23. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set **and** audit is enabled, the sandbox MUST emit audit span events as OTLP log records to that endpoint, in addition to the stdout and OTLP trace exporters. The same endpoint is used for traces and logs (operator does not set a separate logs endpoint).
 
-24. [PLANNED: OLS-3515] Each OTLP log record MUST carry: `agenticrun.uid` as a log record attribute (raw Kubernetes `metadata.uid` with hyphens, via `x-agenticrun-uid`), `agenticrun.phase` (from `derive_phase()`), and the span event data as the log record body. TraceID carries the per-phase trace id from `traceparent`.
+24. Each forwarded span-event OTLP log record MUST carry log **record** attributes matching lightspeed-otel-collector postgresexporter: `agenticrun.uid` and `agenticrun.phase` (from `LIGHTSPEED_AGENTICRUN_UID` / `LIGHTSPEED_AGENTICRUN_STEP` when set), and `event` (span event name, e.g. `gen_ai.choice`). These MUST be stamped via stdlib `logging` `extra` so `LoggingHandler` preserves them on the OTel log record. The span event attributes are the log record body (JSON). When content capture is disabled, `gen_ai.choice` events are still forwarded and the body MAY be `{}` (no content attributes). TraceID on the log record MUST come from the ended span's context (bridge attaches that context before logging so `LoggingHandler` correlates). TracerProvider and LoggerProvider share one Resource with pinned `service.name` (not agenticrun uid/phase). Records without `agenticrun.uid` are skipped by the collector. When audit and the OTLP endpoint are enabled but `LIGHTSPEED_AGENTICRUN_UID` and/or `LIGHTSPEED_AGENTICRUN_STEP` cannot be resolved, the sandbox MUST log a warning at startup (do not fail startup). The span-event → log processor MUST NOT forward OTel automatic `exception` events (stack traces); other intentional span events remain eligible for templog.
 
-25. [PLANNED: OLS-3515] The OTLP log endpoint is independent of the OTEL tracing endpoint. Both can be active simultaneously.
+25. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, stdlib Python logging MUST be exported as OTLP logs via `LoggingHandler` (dual-ship with stderr). Templog audit records use that same path: the span-event processor logs through stdlib (rules 23–24), not a separate OTel Logs API emit.
 
-26. [PLANNED: OLS-3515] When the OTLP log endpoint is absent, no OTLP log records are emitted. Graceful degradation.
+26. When `OTEL_EXPORTER_OTLP_ENDPOINT` is absent, no OTLP log records are emitted. Graceful degradation.
+
+## Verification
+
+- Unit: `tests/test_tracing.py` — shared Resource, span-event → OTLP log forwarding (record attrs; audit gate; unresolved AgenticRun env warning), LoggingHandler dual-ship when endpoint set
+- Unit: `tests/test_audit.py` — AuditLogger span/event emission (unchanged call sites)
 
 ### MCP Semantic Conventions [UNTRACKED]
 

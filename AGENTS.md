@@ -238,13 +238,17 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs |
 | `LIGHTSPEED_REASONING_CONFIG` | JSON object with reasoning/thinking params, parsed at startup, passed to adapters |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root mounted by the FastAPI app, default `/app/skills` |
+| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog); set by operator with OTEL endpoint |
+| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on bridged OTLP log records |
 | `ANTHROPIC_MODEL` | Default Anthropic model for query routes |
 | `GEMINI_MODEL` | Default Gemini model for query routes |
 | `OPENAI_MODEL` | Default OpenAI model for query routes |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible endpoint override |
 | `CLAUDE_CODE_USE_BEDROCK` | Set by config mapping for Bedrock → DeepAgents |
 | `CLAUDE_CODE_USE_VERTEX` | When set to `1`, DeepAgents uses Vertex-backed Anthropic (`ChatAnthropicVertex`) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint for traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared OTLP endpoint for traces and logs |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | Optional collector CA cert path |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) or `http/protobuf` |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex project for Anthropic via Vertex |
 | `CLOUD_ML_REGION` | Vertex region for Anthropic via Vertex (default `us-east5`) |
 | `EVAL_SERVER_URLS` | Provider-to-URL map exported by `evals/run.sh` for eval pytest fixtures |

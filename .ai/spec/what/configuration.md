@@ -27,7 +27,11 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     |---|---|---|
     | `LIGHTSPEED_AUDIT_ENABLED` | No | When `"true"`, structured audit event logging is enabled. Default: disabled. |
     | `LIGHTSPEED_CAPTURE_CONTENT` | No | When `"true"`, `gen_ai.completion` and `gen_ai.reasoning_content` attributes are recorded on `gen_ai.choice` span events. Currently hardcoded to `"true"` by the operator when audit is enabled. [DEFERRED] Separate CRD field for user-controllable opt-in/out planned per parent spec. |
-    | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP gRPC endpoint for span export (e.g. `jaeger-otlp-grpc.observability.svc:4317`). When absent, tracing is no-op. |
+    | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Shared OTLP collector endpoint for span **and** log export. When absent, OTLP export is off (stdout audit JSON still applies when audit is enabled). |
+    | `OTEL_EXPORTER_OTLP_CERTIFICATE` | No | Optional path to CA cert for the collector (set by operator when mTLS/TLS is configured). |
+    | `OTEL_EXPORTER_OTLP_PROTOCOL` | No | `grpc` (default) or `http/protobuf`. |
+    | `LIGHTSPEED_AGENTICRUN_UID` | No | AgenticRun `metadata.uid` for this sandbox pod. Stamped on bridged OTLP log **record** attributes. Required by collector templog INSERT. Set by operator with the OTEL endpoint. |
+    | `LIGHTSPEED_AGENTICRUN_STEP` | No | AgenticRun step/phase for this pod (`analysis`, `execution`, …). Mapped to `agenticrun.phase` on bridged OTLP log records. Set by operator with the OTEL endpoint. |
     | `LIGHTSPEED_MCP_SERVERS` | No | JSON array of MCP server configs. See rule 20. When absent, no MCP servers are configured. |
 
 2. **Provider configuration mapping.** On startup, the sandbox MUST read the generic env vars from rule 1 and set the SDK-specific env vars required by each provider SDK. This mapping runs before the FastAPI app starts. The mapping logic:
@@ -113,7 +117,9 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 | `OPENAI_BASE_URL` | Internal: OpenAI-compatible endpoint. Set by configuration mapping. |
 | `LIGHTSPEED_AUDIT_ENABLED` | Audit event logging toggle. Set by operator from `AgenticOLSConfig`. |
 | `LIGHTSPEED_CAPTURE_CONTENT` | Content capture toggle for `gen_ai.completion`/`gen_ai.reasoning_content` on choice events. Set by operator from `AgenticOLSConfig`. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint for span export. Set by operator from `AgenticOLSConfig`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared OTLP endpoint for span and log export. Set by operator from `AgenticOLSConfig`. |
+| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog). Set by operator with OTEL endpoint. |
+| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on bridged OTLP log records. Set by operator with OTEL endpoint. |
 | `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs with URLs, timeouts, and header sources. Set by operator from `ToolsSpec.mcpServers` and auto-injected defaults. |
 | `LIGHTSPEED_REASONING_CONFIG` | JSON reasoning config from operator. Parsed at startup, passed to adapters via `ProviderQueryOptions`. |
 | `/var/run/secrets/llm-credentials/` | LLM credential files mounted by operator (unconditional). |
