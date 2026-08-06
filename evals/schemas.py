@@ -33,10 +33,9 @@ ANALYSIS_WITH_COMPONENTS_SCHEMA: dict[str, Any] = {
             "description": "Top-level root cause analysis. Required when actionRequired is false.",
             "properties": {
                 "summary": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                 "rootCause": {"type": "string"},
             },
-            "required": ["summary", "confidence", "rootCause"],
+            "required": ["summary", "rootCause"],
         },
         "options": {
             "type": "array",
@@ -50,11 +49,10 @@ ANALYSIS_WITH_COMPONENTS_SCHEMA: dict[str, Any] = {
                         "type": "object",
                         "properties": {
                             "summary": {"type": "string"},
-                            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                             "rootCause": {"type": "string"},
                             "token": {"type": "string"},
                         },
-                        "required": ["summary", "confidence", "rootCause", "token"],
+                        "required": ["summary", "rootCause", "token"],
                     },
                     "remediationPlan": {
                         "type": "object",
@@ -71,13 +69,9 @@ ANALYSIS_WITH_COMPONENTS_SCHEMA: dict[str, Any] = {
                                     "required": ["type", "description"],
                                 },
                             },
-                            "risk": {
-                                "type": "string",
-                                "enum": ["low", "medium", "high", "critical"],
-                            },
                             "reversible": {"type": "boolean"},
                         },
-                        "required": ["description", "actions", "risk", "reversible"],
+                        "required": ["description", "actions", "reversible"],
                     },
                     "verification": {
                         "type": "object",
