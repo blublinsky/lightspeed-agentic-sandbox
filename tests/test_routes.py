@@ -247,7 +247,6 @@ def test_format_context_approved_option_with_actions() -> None:
                 "diagnosis": {"rootCause": "CrashLoopBackOff"},
                 "remediationPlan": {
                     "description": "Roll out restart",
-                    "risk": "low",
                     "reversible": True,
                     "actions": [
                         {"type": "patch", "description": "Scale to zero then up"},
@@ -260,7 +259,7 @@ def test_format_context_approved_option_with_actions() -> None:
     assert "Title: Restart deployment" in text
     assert "Diagnosis: CrashLoopBackOff" in text
     assert "Plan: Roll out restart" in text
-    assert "Risk: low, Reversible: True" in text
+    assert "Reversible: True" in text
     assert "Actions to execute:" in text
     assert "  - [patch] Scale to zero then up" in text
     assert "=== DO NOT perform any actions beyond what is listed above ===" in text
@@ -276,7 +275,6 @@ def test_format_context_approved_option_with_command() -> None:
                 "diagnosis": {"rootCause": "OOMKilled"},
                 "remediationPlan": {
                     "description": "Patch deployment",
-                    "risk": "low",
                     "reversible": True,
                     "actions": [
                         {
@@ -301,7 +299,6 @@ def test_format_context_approved_option_without_actions() -> None:
                 "diagnosis": {"rootCause": "Unknown"},
                 "remediationPlan": {
                     "description": "Wait and collect logs",
-                    "risk": "none",
                     "reversible": True,
                 },
             }
@@ -323,7 +320,6 @@ def test_format_context_combined_fields() -> None:
                 "diagnosis": {"rootCause": "missing role"},
                 "remediationPlan": {
                     "description": "Apply RoleBinding",
-                    "risk": "medium",
                     "reversible": False,
                 },
             },

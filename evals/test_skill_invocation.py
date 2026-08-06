@@ -37,8 +37,6 @@ async def test_find_token_skill(
     assert_tool_token(eval_workspace, ".hidden_token", result, provider_name, "find-token.sh")
 
     option = result.raw["options"][0]
-    assert option["diagnosis"]["confidence"] in ("low", "medium", "high")
-    assert option["remediationPlan"]["risk"] in ("low", "medium", "high", "critical")
     assert isinstance(option["remediationPlan"]["reversible"], bool)
     assert len(option["remediationPlan"]["actions"]) > 0
     assert len(option["components"]) > 0

@@ -48,7 +48,7 @@ def _format_context_prefix(context: dict[str, Any]) -> str:
         lines.append(f"Diagnosis: {opt['diagnosis']['rootCause']}")
         plan = opt["remediationPlan"]
         lines.append(f"Plan: {plan['description']}")
-        lines.append(f"Risk: {plan['risk']}, Reversible: {plan['reversible']}")
+        lines.append(f"Reversible: {plan.get('reversible', 'unknown')}")
         if actions := plan.get("actions"):
             lines.append("Actions to execute:")
             for action in actions:

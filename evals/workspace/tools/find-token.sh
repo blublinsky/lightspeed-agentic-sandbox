@@ -19,7 +19,6 @@ cat <<EOF
       "summary": "Successfully retrieved verification tokens",
       "diagnosis": {
         "summary": "Token generation system is operational",
-        "confidence": "high",
         "rootCause": "Verification requested by eval harness",
         "token": "DIAG_${DIAG_TOKEN}"
       },
@@ -29,7 +28,6 @@ cat <<EOF
           {"type": "verify", "description": "Generate cryptographic tokens"},
           {"type": "report", "description": "Return tokens in structured format"}
         ],
-        "risk": "low",
         "reversible": true,
         "estimatedImpact": "none"
       },

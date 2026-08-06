@@ -11,14 +11,12 @@ _MINIMAL_OPTION: dict = {
     "title": "Fix it",
     "diagnosis": {
         "summary": "s",
-        "confidence": "high",
         "rootCause": "r",
         "token": "t",
     },
     "remediationPlan": {
         "description": "d",
         "actions": [{"type": "t", "description": "d"}],
-        "risk": "low",
         "reversible": True,
     },
     "verification": {"description": "d"},
@@ -40,7 +38,7 @@ _MINIMAL_OPTION: dict = {
     ],
 }
 
-_DIAGNOSIS: dict = {"summary": "s", "confidence": "high", "rootCause": "r"}
+_DIAGNOSIS: dict = {"summary": "s", "rootCause": "r"}
 
 
 def test_action_required_true_with_options():
