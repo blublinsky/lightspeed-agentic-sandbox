@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Callable
+import subprocess
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from kubernetes import config as k8s_config  # type: ignore[import-untyped]
+from kubernetes.client import ApiClient, CoreV1Api, CustomObjectsApi  # type: ignore[import-untyped]
 
 from tests.e2e.runner import RunHttpResult, run_query
 from steps.given import *  # noqa: F403 — step fixtures must be in conftest namespace
@@ -43,6 +47,57 @@ def e2e_output_dir() -> Path | None:
     if not raw:
         return None
     return Path(raw)
+
+
+@pytest.fixture(scope="session")
+def _k8s_config_loaded() -> None:
+    """Load kubeconfig once per session."""
+    k8s_config.load_kube_config()
+
+
+@pytest.fixture(scope="session")
+def _k8s_api_client(_k8s_config_loaded: None) -> ApiClient:
+    return ApiClient()
+
+
+@pytest.fixture(scope="session")
+def k8s_client(_k8s_api_client: ApiClient) -> CustomObjectsApi:
+    """Authenticated CustomObjectsApi from KUBECONFIG."""
+    return CustomObjectsApi(_k8s_api_client)
+
+
+@pytest.fixture(scope="session")
+def k8s_core_client(_k8s_api_client: ApiClient) -> CoreV1Api:
+    """Authenticated CoreV1Api for pod log retrieval."""
+    return CoreV1Api(_k8s_api_client)
+
+
+@pytest.fixture
+def scenario_cleanup() -> Generator[None, None, None]:
+    """Yield fixture that runs cleanup.sh on test teardown.
+
+    Expects SCENARIO_DIR env var to point to the scenario directory
+    containing cleanup.sh. Skips cleanup if not set.
+    """
+    yield
+    scenario_dir = os.environ.get("SCENARIO_DIR", "").strip()
+    if not scenario_dir:
+        return
+    cleanup_script = Path(scenario_dir) / "cleanup.sh"
+    if cleanup_script.is_file():
+        result = subprocess.run(  # noqa: S603
+            ["bash", str(cleanup_script)],  # noqa: S607
+            check=False,
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "cleanup.sh exited %d\nstderr: %s",
+                result.returncode,
+                result.stderr.decode(errors="replace").strip(),
+            )
 
 
 @pytest.fixture
