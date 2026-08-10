@@ -29,11 +29,11 @@ COPY src/ src/
 COPY .konflux/requirements.hashes.*.txt .konflux/requirements.hermetic.txt ./
 
 # Install Python packages from RHOAI wheels + PyPI sdist.
-# In hermetic builds, Cachi2 sets PIP_* env vars pointing to prefetched deps.
+# In hermetic builds, Konflux injects PIP_* env vars via buildah secret mounts.
 # The sed strips --index-url lines because uv rejects multiple index URLs
 # when using --no-index --find-links.
-RUN if [ -f /cachi2/cachi2.env ]; then \
-        . /cachi2/cachi2.env && \
+ARG HERMETIC_BUILD=false
+RUN if [ "${HERMETIC_BUILD}" = "true" ]; then \
         pip3.12 install --no-cache-dir uv && \
         uv venv && \
         for f in requirements.hashes.wheel.txt requirements.hashes.source.txt requirements.hashes.wheel.pypi.txt; do \
