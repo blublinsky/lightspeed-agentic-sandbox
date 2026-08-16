@@ -7,7 +7,10 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from lightspeed_agentic.mcp import (
+    MCPConfigError,
     ResolvedMCPHeader,
     ResolvedMCPServer,
     parse_mcp_servers,
@@ -29,13 +32,19 @@ class TestParseMCPServers:
         with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": "   "}):
             assert parse_mcp_servers() == []
 
-    def test_invalid_json_returns_empty(self):
-        with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": "not-json"}):
-            assert parse_mcp_servers() == []
+    def test_invalid_json_raises(self):
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": "not-json"}),
+            pytest.raises(MCPConfigError, match="invalid JSON"),
+        ):
+            parse_mcp_servers()
 
-    def test_non_array_returns_empty(self):
-        with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": '{"key": "val"}'}):
-            assert parse_mcp_servers() == []
+    def test_non_array_raises(self):
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": '{"key": "val"}'}),
+            pytest.raises(MCPConfigError, match="must be a JSON array"),
+        ):
+            parse_mcp_servers()
 
     def test_basic_server_no_headers(self):
         servers_json = json.dumps([{"name": "test", "url": "http://test:8080/mcp"}])
@@ -171,14 +180,15 @@ class TestParseMCPServers:
             assert result[1].name == "b"
             assert result[1].timeout == 30
 
-    def test_invalid_entry_skipped(self):
+    def test_invalid_entry_raises(self):
         servers_json = json.dumps([42, {"name": "ok", "url": "http://ok:8080/mcp"}])
-        with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}):
-            result = parse_mcp_servers()
-            assert len(result) == 1
-            assert result[0].name == "ok"
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match=r"\[0\] must be a JSON object"),
+        ):
+            parse_mcp_servers()
 
-    def test_invalid_header_skipped(self):
+    def test_invalid_header_raises(self):
         servers_json = json.dumps(
             [
                 {
@@ -191,9 +201,27 @@ class TestParseMCPServers:
                 },
             ]
         )
-        with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}):
-            result = parse_mcp_servers()
-            assert result[0].headers == []
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match=r"headers\[0\] must be a JSON object"),
+        ):
+            parse_mcp_servers()
+
+    def test_unknown_header_source_raises(self):
+        servers_json = json.dumps(
+            [
+                {
+                    "name": "s",
+                    "url": "http://s:8080/mcp",
+                    "headers": [{"name": "X", "source": "Unknown"}],
+                },
+            ]
+        )
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match="unsupported source"),
+        ):
+            parse_mcp_servers()
 
     def test_path_traversal_rejected(self, tmp_path: Path):
         mount_root = tmp_path / "secrets"
@@ -230,15 +258,65 @@ class TestParseMCPServers:
             result = parse_mcp_servers()
             assert result[0].headers == []
 
-    def test_headers_non_list_treated_as_empty(self):
+    def test_headers_non_list_raises(self):
         servers_json = json.dumps(
             [
                 {"name": "s", "url": "http://s:8080/mcp", "headers": "bad"},
             ]
         )
-        with patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}):
-            result = parse_mcp_servers()
-            assert result[0].headers == []
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match="headers must be a JSON array"),
+        ):
+            parse_mcp_servers()
+
+    def test_header_non_string_name_raises(self):
+        servers_json = json.dumps(
+            [
+                {
+                    "name": "s",
+                    "url": "http://s:8080/mcp",
+                    "headers": [{"name": 42, "source": "Client"}],
+                },
+            ]
+        )
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match=r"headers\[0\] missing or invalid name"),
+        ):
+            parse_mcp_servers()
+
+    def test_header_empty_name_raises(self):
+        servers_json = json.dumps(
+            [
+                {
+                    "name": "s",
+                    "url": "http://s:8080/mcp",
+                    "headers": [{"name": "", "source": "Client"}],
+                },
+            ]
+        )
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match=r"headers\[0\] missing or invalid name"),
+        ):
+            parse_mcp_servers()
+
+    def test_header_non_string_source_raises(self):
+        servers_json = json.dumps(
+            [
+                {
+                    "name": "s",
+                    "url": "http://s:8080/mcp",
+                    "headers": [{"name": "X", "source": 123}],
+                },
+            ]
+        )
+        with (
+            patch.dict(os.environ, {"LIGHTSPEED_MCP_SERVERS": servers_json}),
+            pytest.raises(MCPConfigError, match=r"headers\[0\] missing or invalid source"),
+        ):
+            parse_mcp_servers()
 
 
 class TestGeminiAdapter:

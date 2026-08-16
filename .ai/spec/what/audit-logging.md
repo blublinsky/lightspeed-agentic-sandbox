@@ -52,13 +52,13 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Content Capture Policy
 
-9. The `gen_ai.completion` and `gen_ai.reasoning_content` span event attributes contain LLM output that may include PII or sensitive data. Recording these attributes MUST be opt-in, controlled by the audit content capture setting received from the operator. When content capture is disabled, `gen_ai.choice` events are still emitted but the content attributes are omitted. This aligns with the OTel GenAI semantic convention requirement level of Opt-In for content attributes.
+9. The `gen_ai.completion` and `gen_ai.reasoning_content` span event attributes contain LLM output that may include PII or sensitive data. Recording these attributes MUST be opt-in via the audit content capture setting. When `LIGHTSPEED_AUDIT_ENABLED=true` and `LIGHTSPEED_CAPTURE_CONTENT` is unset, the sandbox MUST default content capture to on (operator does not set the env today). Set `LIGHTSPEED_CAPTURE_CONTENT=false` to emit `gen_ai.choice` events without content attributes. When audit is disabled, content capture MUST be off. This aligns with the OTel GenAI semantic convention requirement level of Opt-In for content attributes.
 
 ### Trace Context Reception
 
-10. The sandbox MUST extract the W3C `traceparent` header from incoming `/v1/agent/run` requests. The trace context from this header establishes the parent span for the inference span.
+10. The sandbox establishes trace context during each batch run. When audit or OTLP export is enabled (`otel_runtime_enabled()`), `batch.main()` calls `init_tracer()` before `run_agent_query()`. When the operator sets W3C `TRACEPARENT` on the pod (from the active phase span), `batch.main()` passes it to `run_agent_query()` so the inference span is a child of the operator phase span.
 
-11. If no `traceparent` header is present, the sandbox MUST generate a new trace ID for the run (graceful degradation).
+11. If `TRACEPARENT` is unset or invalid, the sandbox MUST generate a new trace ID for the run (graceful degradation).
 
 ### Single-Emission Rule
 
@@ -87,7 +87,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Metrics
 
-19. The sandbox MUST expose a `/metrics` endpoint serving Prometheus metrics. The following `gen_ai.*` metrics MUST be implemented:
+19. The sandbox MUST record the following `gen_ai.*` Prometheus histograms during agent execution (`metrics.py`). Histograms are **in-process only** (`prometheus_client`); the batch entrypoint MUST NOT expose a `/metrics` HTTP scrape endpoint and MUST NOT export histograms to OTLP or Pushgateway at shutdown. Short-lived one-shot pods are a poor fit for pull-based Prometheus scraping; **OTLP traces** (with `gen_ai.usage.*` on inference spans) are the operational signal when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Unit tests (`tests/test_metrics.py`) verify histogram recording.
 
 | Metric | Type | Unit | Labels |
 |---|---|---|---|
@@ -99,7 +99,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ### Configuration
 
-21. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and when OTEL is enabled also `LIGHTSPEED_AGENTICRUN_UID` / `LIGHTSPEED_AGENTICRUN_STEP`). Audit is enabled only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"` after strip and lowercasing (same parsing as `configuration.md` / `app.py`). Unset and every other value disable audit. When audit is disabled, the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the request path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
+21. The sandbox receives audit config from the operator via environment variables (`LIGHTSPEED_AUDIT_ENABLED`, `LIGHTSPEED_CAPTURE_CONTENT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and when OTEL is enabled also `LIGHTSPEED_AGENTICRUN_UID` / `LIGHTSPEED_AGENTICRUN_STEP`). Audit is enabled only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"` after strip and lowercasing (same parsing as `configuration.md` / `batch.py`). Unset and every other value disable audit. When audit is disabled, the sandbox MUST NOT emit `gen_ai.choice` content events and MUST NOT use the stdout audit exporter path gated by that flag. Inference and tool spans may still be created for the agent path (current code and unit tests). When audit is enabled, spans and span events emit per the rules above.
 
 22. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured (passed from the operator), the sandbox MUST configure OTLP exporters for **both** traces and logs targeting that endpoint. The span-event → log processor MUST be attached only when the endpoint is set **and** audit is enabled (`LIGHTSPEED_AUDIT_ENABLED`), matching the stdout audit exporter gate. When the endpoint is absent, no OTLP exporters and no span-event log forwarding. The stdout span exporter emits OTLP JSON when audit is enabled.
 
@@ -117,6 +117,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 - Unit: `tests/test_tracing.py` — shared Resource, span-event → OTLP log forwarding (record attrs; audit gate; unresolved AgenticRun env warning), LoggingHandler dual-ship when endpoint set
 - Unit: `tests/test_audit.py` — AuditLogger span/event emission (unchanged call sites)
+- Unit: `tests/test_metrics.py` — in-process histogram recording (no export path in batch)
 
 ### MCP Semantic Conventions [UNTRACKED]
 
@@ -124,7 +125,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 ## Cross-References
 
-- `run-api.md` — `/v1/agent/run` endpoint where trace context arrives
+- `run-api.md` — batch entrypoint where tracing and agent execution run
 - `provider-contract.md` — provider adapter event streams where spans and span events are created
 - Parent workspace `ols/.ai/spec/what/templog.md` — Temporary audit log storage (cross-repo); sandbox emission tracked by OLS-3515
 - `ols/.ai/spec/what/audit-logging.md` — parent spec (authoritative for correlation model, event semantics, OTel GenAI attribute reference)

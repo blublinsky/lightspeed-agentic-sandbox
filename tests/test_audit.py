@@ -10,7 +10,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 
-from lightspeed_agentic.audit import AuditLogger, derive_phase
+from lightspeed_agentic.audit import AuditLogger
 from lightspeed_agentic.types import (
     ContentBlockStopEvent,
     TextDeltaEvent,
@@ -33,33 +33,6 @@ class _InMemorySpanExporter(SpanExporter):
 
     def shutdown(self) -> None:
         pass
-
-
-class TestDerivePhase:
-    def test_no_context_returns_analysis(self) -> None:
-        assert derive_phase(None) == "analysis"
-
-    def test_empty_context_returns_analysis(self) -> None:
-        assert derive_phase({}) == "analysis"
-
-    def test_approved_option_returns_execution(self) -> None:
-        assert derive_phase({"approvedOption": {"title": "fix"}}) == "execution"
-
-    def test_execution_result_returns_verification(self) -> None:
-        assert derive_phase({"executionResult": {"success": True}}) == "verification"
-
-    def test_explicit_phase_takes_precedence(self) -> None:
-        assert (
-            derive_phase({"phase": "escalation", "approvedOption": {"title": "fix"}})
-            == "escalation"
-        )
-
-    def test_both_approved_and_result_prefers_verification(self) -> None:
-        ctx: dict[str, Any] = {
-            "approvedOption": {"title": "fix"},
-            "executionResult": {"success": True},
-        }
-        assert derive_phase(ctx) == "verification"
 
 
 @pytest.fixture

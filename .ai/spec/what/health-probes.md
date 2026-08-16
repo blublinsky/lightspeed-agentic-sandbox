@@ -1,99 +1,35 @@
-# Behavioral spec: health probes
+# Behavioral spec: readiness checks
 
-Origin: [OLS-3058](https://redhat.atlassian.net/browse/OLS-3058) — sandbox failure modes audit.
+Audience: AI agents (Claude). Precision over narrative.
 
-Cross-references: `configuration.md` (env vars, port), `run-api.md` (route mounting).
+Cross-references: batch lifecycle → `run-api.md`. Credential env mapping → `configuration.md`.
 
-## Principles
+> **HTTP probes superseded (OLS-3066).** There is no `GET /health` or `GET /ready`.
+> Readiness runs in-process at batch startup before the LLM is invoked.
 
-Sandbox pods are ephemeral one-shot workers. Probes confirm the pod can accept work; all real failures surface on `POST /v1/agent/run` where the operator handles them. Probes MUST NOT make authenticated API calls or spend tokens.
+## Behavioral Rules
 
-## Endpoints
+1. **Fail-fast before LLM.** After `resolve_sdk()`, `batch.main()` MUST call `run_readiness_checks(sdk)` before `create_provider()` or `run_agent_query()`. When any check fails, the sandbox MUST use the sandbox failure path (`run-api.md` rule 23): write a termination log with per-check status strings and exit non-zero.
 
-### `GET /health` (liveness)
+2. **R1 — Credential env.** `check_provider_env(expected_envs, credential_file_envs)` — required env vars from `ResolvedSDK` MUST be set and non-empty. For env vars listed in `credential_file_envs` (Vertex: `GOOGLE_APPLICATION_CREDENTIALS`), the path MUST exist, be readable, and non-empty.
 
-Existing endpoint, unchanged. Returns `{"status": "ok"}` if uvicorn is alive. No subsystem checks.
-
-### `GET /ready` (readiness, new)
-
-Returns HTTP 200 when all checks pass, HTTP 503 when any check fails. Not under `/v1/agent`.
-
-**Healthy:** `{"status": "ok"}`
-
-**Unhealthy:**
-```json
-{
-  "status": "error",
-  "checks": {
-    "provider_env": "ok",
-    "provider_endpoint": "error: connection refused"
-  }
-}
-```
-
-## Readiness Checks
-
-**R1 — Credential env.** Check that the expected credential env var(s) for the resolved backend are set and non-empty. The expected vars are backend-specific (carried in `ResolvedSDK.expected_envs`), not SDK-level. Does NOT validate the key's value.
+3. **No endpoint network probe.** The sandbox MUST NOT HTTP-probe provider base URLs before the agent run. Endpoint reachability is established when the provider SDK invokes the LLM API.
 
 | Backend | Required env var(s) |
 |---------|-------------------|
 | `anthropic` (direct) | `ANTHROPIC_API_KEY` |
-| `vertex/*` (all model providers) | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `vertex/*` | `GOOGLE_APPLICATION_CREDENTIALS` (file path) |
 | `openai` (direct) | `OPENAI_API_KEY` |
 | `azure` | `AZURE_OPENAI_API_KEY` |
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 
-**R2 — Provider endpoint reachable.** Unauthenticated HTTP GET to the provider base URL. 3-second timeout. Any HTTP response (including 4xx) = reachable. Timeout or connection error = not ready.
-
-| Provider | Probe URL |
-|----------|----------|
-| `deepagents` | `https://api.anthropic.com/` (direct), Vertex AI regional endpoint, or Bedrock regional endpoint — resolved per backend path in `configuration.md` rule 2 |
-| `gemini` | `https://generativelanguage.googleapis.com/` |
-| `openai` | `OPENAI_BASE_URL` or `https://api.openai.com/` |
-
-**R3 — MCP server reachability.** Not implemented. Previously marked "[PLANNED: when MCP support lands]" but MCP runtime shipped (OLS-3185 / OLS-3443) without an R3 story (OLS-3046 / OLS-3060 closed with R1/R2 only). No current MUST. File a story before specifying R3 again.
-
-## Recommended Probe Config
-
-```yaml
-livenessProbe:
-  httpGet: { path: /health, port: 8080 }
-  periodSeconds: 10
-  timeoutSeconds: 3
-  failureThreshold: 3
-
-readinessProbe:
-  httpGet: { path: /ready, port: 8080 }
-  initialDelaySeconds: 2
-  periodSeconds: 5
-  timeoutSeconds: 5
-  failureThreshold: 2
-```
-
-## Out of Scope for Probes
-
-Credential validity, skills content, model availability, tool execution — all caught by `/run` and handled by the operator.
+4. **MCP reachability.** Not implemented; no Jira story.
 
 ## Verification
 
-Harness scope (live vs unit, run modes, flake policy):
-[e2e-testing.md](e2e-testing.md).
+| Artifact | Rules exercised |
+|----------|-----------------|
+| [test_ready.py](../../../tests/test_ready.py) | R1, `run_readiness_checks()` |
+| [test_batch.py](../../../tests/test_batch.py) | Rule 1 (fail-fast path) |
 
-Two layers:
-
-1. **Unit tests** (`tests/test_health.py`, `tests/test_ready.py`) — liveness payload,
-   R1/R2 check helpers, and `/ready` route with mocked endpoint probe. Preferred for
-   503 + `checks` shape and backend-specific credential rules.
-2. **Container BDD** (`tests/e2e/features/`, `scripts/e2e-containers.sh`) — HTTP
-   against a running sandbox image (same base URL as `/v1/agent/run` e2e, but probe
-   paths are at the app root).
-
-Cross-reference: probes are **not** under `/v1/agent` → `run-api.md` rules 2, 10–11.
-
-| Artifact | Spec coverage | Notes |
-|----------|---------------|-------|
-| [test_health.py](../../../tests/test_health.py) | Liveness (`GET /health` → 200, `{"status":"ok"}`) | No subsystem checks |
-| [test_ready.py](../../../tests/test_ready.py) | R1 (credential env per backend), R2 (endpoint probe semantics), healthy/unhealthy `/ready` responses | Mocks `probe_provider_endpoint` for route tests; does not hit live provider URLs |
-| [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Readiness/liveness) | Liveness; readiness when container env satisfies R1 and R2 | E2e covers **happy path** only (200 on `/ready`); negative 503 scenarios stay unit-tested unless spike adds a deliberate misconfigured container |
-
-R3 (MCP reachability) is not implemented; no tracked story.
+Container BDD probe scenarios in [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) target the **removed** HTTP API and are pending harness migration.

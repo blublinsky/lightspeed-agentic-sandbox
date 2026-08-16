@@ -2,7 +2,7 @@
 
 Audience: AI agents (Claude). Precision over narrative.
 
-Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and build → `configuration.md`.
+Cross-references: batch agent invocation → `run-api.md`. Env and build → `configuration.md`.
 
 ## Behavioral Rules
 
@@ -20,7 +20,7 @@ Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and
 
 7. **Result (`result`).** Terminal event: final text payload (may be JSON or plain text depending on structured-output path), USD cost (numeric; adapters may report zero when the SDK lacks cost), and input/output token counts.
 
-8. **ProviderQueryOptions — `prompt`.** Full user message after any HTTP-layer prefixing (see `run-api.md` context rules).
+8. **ProviderQueryOptions — `prompt`.** Full user message after any context prefix formatting in `run_agent.py` (see `run-api.md` context rules).
 
 9. **ProviderQueryOptions — `system_prompt`.** System or developer instruction string.
 
@@ -36,7 +36,7 @@ Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and
 
 15. **ProviderQueryOptions — `output_schema`.** Optional JSON-schema dict; when set, adapters map it to the SDK's native structured-output mechanism.
 
-16. **ProviderQueryOptions — `stream`.** When true, adapters that support partial streaming should yield deltas; when false, they may batch. The HTTP `POST /run` path does not set this flag from the request body.
+16. **ProviderQueryOptions — `stream`.** When true, adapters that support partial streaming should yield deltas; when false, they may batch. The batch entrypoint does not set this flag from input files.
 
 17. **ProviderQueryOptions — `mcp_servers`.** Optional list of `ResolvedMCPServer` values from `mcp.parse_mcp_servers()`. Each entry carries `name`, `url`, `timeout`, and `headers` as a list of `ResolvedMCPHeader` (`name`, `value`). Adapters MAY convert headers to a dict at the SDK boundary. When non-empty, adapters MUST wire these servers into their SDK's native MCP client mechanism (see rules 31–34). When empty or absent, no MCP servers are configured.
 
@@ -54,7 +54,7 @@ Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and
 
 24. **Skills.** `cwd` is the skills root. Skill content lives at `cwd/<name>/SKILL.md`. DeepAgents and OpenAI MUST enable their SDK skills mechanism only when at least one immediate subdirectory of `cwd` contains a `SKILL.md` (`has_skills(cwd)`). DeepAgents then passes `skills=[cwd]` to `create_deep_agent()` (`SkillsMiddleware`). OpenAI registers the `Skills` capability with `LocalDirLazySkillSource` rooted at `cwd`; `skills_path="skills/.agents"` is the sandbox materialization path relative to the manifest root (`cwd.parent`), matching the operator emptyDir at `/app/skills/.agents` — it is not a host discovery path. An empty `cwd/.agents` directory MUST NOT enable skills. Gemini loads a skill toolset from the skill directory listing and omits it when none are found.
 
-25. **Default allowed tools list.** Shared default names: `Bash`, `Read`, `Glob`, `Grep`, `Skill`. The HTTP route always passes this list unless a future contract exposes overrides. [PLANNED: OLS-3033]
+25. **Default allowed tools list.** Shared default names: `Bash`, `Read`, `Glob`, `Grep`, `Skill`. `run_agent_query()` always passes this list unless a future contract exposes overrides. [PLANNED: OLS-3033]
 
 26. **Event logging.** A phase-tagged logger buffers `thinking_delta` events, flushes when buffer size exceeds an internal threshold or on `content_block_stop` or tool/result events, and logs truncated thinking. Tool calls and results are logged with separate input/output truncation caps. The `result` event logs cost, combined token count, and truncated final text.
 

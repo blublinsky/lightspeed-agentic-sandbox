@@ -1,10 +1,12 @@
-"""Prometheus metrics for OTel GenAI semantic conventions."""
+"""Prometheus histograms for OTel GenAI semantic conventions.
+
+Recorded in-process during agent runs. Batch entrypoint does not scrape or
+export them — see audit-logging.md rule 19 (OTLP traces carry usage for ops).
+"""
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, Histogram, generate_latest
+from prometheus_client import Histogram
 
 TOKEN_BUCKETS = (
     1,
@@ -41,9 +43,3 @@ tool_duration = Histogram(
     "Tool execution duration",
     ["gen_ai_tool_name"],
 )
-
-
-def register_metrics_route(app: FastAPI) -> None:
-    @app.get("/metrics")
-    def metrics() -> Response:
-        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

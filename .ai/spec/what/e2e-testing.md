@@ -1,9 +1,14 @@
 # E2E container BDD harness
 
 Meta-spec for **how** live end-to-end tests run in this repository. Behavioral
-rules for `/run`, probes, and providers live in the other `what/` specs; this
-document maps scenarios to those rules and records spike decisions for
+rules for the batch entrypoint, readiness helpers, and providers live in the other
+`what/` specs; this document maps scenarios to those rules and records spike decisions for
 [OLS-3220](https://redhat.atlassian.net/browse/OLS-3220)
+
+> **Transitional state:** The sandbox no longer exposes HTTP (`app.py`, `/health`,
+> `/ready`, `/v1/agent/run` removed). The BDD harness (`runner.py`, `e2e-containers.sh`,
+> feature files) still targets HTTP and is **[PLANNED: migrate to batch]**. Unit tests
+> (`test_run_agent.py`, `test_batch.py`, `test_ready.py`) cover batch behavior today.
 
 ## Spike findings (OLS-3220)
 
@@ -29,10 +34,10 @@ belongs in unit tests.
 
 | Area | Reason | Artifact |
 |------|--------|----------|
-| Exact `[context]` prefix text | Deterministic formatting; no need for live LLM | [test_routes.py](../../../tests/test_routes.py) (`_format_context_prefix`) |
-| Empty provider result (run-api rule 23) | Requires mocked provider; unreliable with live models | [test_routes.py](../../../tests/test_routes.py) |
-| `/ready` 503 when credentials missing | Needs deliberately misconfigured runtime; covered without live network | [test_ready.py](../../../tests/test_ready.py) |
-| HTTP 500 on adversarial schema (rule 22) | Live suite asserts HTTP 200 + envelope instead | [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [test_routes.py](../../../tests/test_routes.py) |
+| Exact `[context]` prefix text | Deterministic formatting; no need for live LLM | [test_run_agent.py](../../../tests/test_run_agent.py) (`format_context_prefix`) |
+| Empty provider result (run-api rule 23) | Requires mocked provider; unreliable with live models | [test_run_agent.py](../../../tests/test_run_agent.py) |
+| Readiness R1 when credentials missing | Needs deliberately misconfigured runtime; covered without live network | [test_ready.py](../../../tests/test_ready.py) |
+| HTTP 500 on adversarial schema (rule 22) | Live suite asserts envelope via HTTP; unit tests cover batch path | [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [test_run_agent.py](../../../tests/test_run_agent.py) |
 
 ### Unimplemented / uncovered
 
@@ -62,7 +67,7 @@ belongs in unit tests.
 | Behavioral spec | This harness exercises |
 |-----------------|------------------------|
 | [run-api.md](run-api.md) | Timeout (rule 21), context wiring (rules 4, 7, 12–16); rules 22–23 via unit tests |
-| [health-probes.md](health-probes.md) | `/health`, `/ready` happy path (rules 10–11) |
+| [health-probes.md](health-probes.md) | Batch startup readiness (R1); legacy HTTP probe BDD pending migration |
 | [provider-contract.md](provider-contract.md) | Structured output and skills via existing feature files |
 | [configuration.md](configuration.md) | Model/env resolution implicit in container and prow-host startup |
 
@@ -137,15 +142,15 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 
 | Feature file | Primary spec | Scenarios |
 |--------------|--------------|-----------|
-| [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) | run-api, health-probes | Probes, timeout, context echo |
+| [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) | run-api, health-probes (legacy HTTP) | Probes, timeout, context echo — harness pending batch migration |
 | [structured_output.feature](../../../tests/e2e/features/structured_output.feature) | run-api, provider-contract | JSON schema, text fallback, adversarial schema |
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, nonskill query |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration, health-probes | MCP connectivity wiring, credential/header resolution, `/health` |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning/thinking config passthrough |
 | [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
 
-Unit tests: [test_routes.py](../../../tests/test_routes.py),
-[test_health.py](../../../tests/test_health.py),
+Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
+[test_batch.py](../../../tests/test_batch.py),
 [test_ready.py](../../../tests/test_ready.py).
 
 ## Troubleshooting scenario tests (OLS-3739)
@@ -195,8 +200,9 @@ and expected domain keywords.
 | `oom` | Diagnose OOMKilled | `OOMKilled` |
 | `wrong_networkpolicy` | Diagnose and fix NetworkPolicy | `NetworkPolicy` |
 
-Setup/cleanup scripts run on the test host via `subprocess` — they are cluster
-manipulation scripts using `oc`/`kubectl`, not Python.
+Setup/cleanup scripts run on the test host via `subprocess` — they are Bash scripts
+that manipulate cluster state with `kubectl` (see `scenarios/troubleshooting/lib.sh`).
+AgenticRun and Result CR lifecycle in tests use the `kubernetes` Python client, not shell.
 
 ### BDD structure
 

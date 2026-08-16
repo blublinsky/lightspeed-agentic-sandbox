@@ -9,7 +9,13 @@ import pytest
 from opentelemetry import trace
 
 import lightspeed_agentic.tracing as _tracing_mod
-from lightspeed_agentic.tracing import get_tracer, init_tracer, parse_traceparent, shutdown_tracer
+from lightspeed_agentic.tracing import (
+    get_tracer,
+    init_tracer,
+    otel_runtime_enabled,
+    parse_traceparent,
+    shutdown_tracer,
+)
 
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -72,6 +78,23 @@ class TestParseTraceparent:
         assert id1 != id2
 
 
+class TestOtelRuntimeEnabled:
+    def test_false_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIGHTSPEED_AUDIT_ENABLED", raising=False)
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        assert otel_runtime_enabled() is False
+
+    def test_true_when_audit_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+        assert otel_runtime_enabled() is True
+
+    def test_true_when_endpoint_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIGHTSPEED_AUDIT_ENABLED", raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+        assert otel_runtime_enabled() is True
+
+
 class TestInitTracer:
     def test_init_without_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
@@ -119,8 +142,7 @@ class TestInitTracer:
     ) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "uid-123")
-        monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "execution")
-        init_tracer()
+        init_tracer(agenticrun_phase="execution")
         assert _tracing_mod._state.logger_provider is not None
         assert _tracing_mod._state.tracer_provider is not None
         assert (
@@ -157,8 +179,7 @@ class TestInitTracer:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
         monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "uid-1")
-        monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "execution")
-        init_tracer()
+        init_tracer(agenticrun_phase="execution")
 
         exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
         assert _tracing_mod._state.logger_provider is not None
@@ -197,8 +218,7 @@ class TestInitTracer:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
         monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "uid-1")
-        monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "execution")
-        init_tracer()
+        init_tracer(agenticrun_phase="execution")
 
         exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
         assert _tracing_mod._state.logger_provider is not None
@@ -228,8 +248,7 @@ class TestInitTracer:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
         monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "uid-1")
-        monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "execution")
-        init_tracer()
+        init_tracer(agenticrun_phase="execution")
 
         exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
         assert _tracing_mod._state.logger_provider is not None
@@ -264,13 +283,12 @@ class TestInitTracer:
         monkeypatch.delenv("LIGHTSPEED_AGENTICRUN_UID", raising=False)
         monkeypatch.delenv("LIGHTSPEED_AGENTICRUN_STEP", raising=False)
         with caplog.at_level(logging.WARNING, logger="lightspeed_agentic.tracing"):
-            init_tracer()
+            init_tracer(agenticrun_phase="execution")
         assert any(
-            "cannot resolve env" in r.message
-            and "LIGHTSPEED_AGENTICRUN_UID" in r.message
-            and "LIGHTSPEED_AGENTICRUN_STEP" in r.message
+            "cannot resolve env" in r.message and "LIGHTSPEED_AGENTICRUN_UID" in r.message
             for r in caplog.records
         )
+        assert not any("LIGHTSPEED_AGENTICRUN_STEP" in r.message for r in caplog.records)
 
     def test_span_events_not_forwarded_when_audit_disabled(
         self, monkeypatch: pytest.MonkeyPatch

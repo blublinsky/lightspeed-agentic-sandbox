@@ -82,7 +82,7 @@ _rm_container_owned() {
         || true
 }
 
-APP_SOURCE_MARKER="/opt/lightspeed/src/lightspeed_agentic/app.py"
+APP_SOURCE_MARKER="/opt/lightspeed/src/lightspeed_agentic/batch.py"
 
 _ensure_container_runtime() {
     if "${RUNTIME}" info >/dev/null 2>&1; then

@@ -14,10 +14,10 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | Spec | Description |
 |------|-------------|
 | [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
-| [run-api.md](what/run-api.md) | POST /run endpoint: request/response shapes, context prefix, timeouts, error handling |
+| [run-api.md](what/run-api.md) | Batch entrypoint: `/input/` files, agent run, Result CR publishing, context prefix, timeouts |
 | [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
-| [health-probes.md](what/health-probes.md) | Liveness (`/health`) and readiness (`/ready`) endpoints, failure mode audit, probe configuration |
+| [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI semantic conventions, span events for LLM calls and tool execution, compliance audit trail |
 | [e2e-testing.md](what/e2e-testing.md) | Container BDD harness: run modes, live vs unit split, OLS-3220 spike findings |
 
@@ -41,11 +41,11 @@ AI agents. Content is optimized for precision and machine consumption.
 | Task | Start here |
 |---|---|
 | Understand the system | `what/system-overview.md` |
-| Understand the /run API | `what/run-api.md` |
+| Understand the batch entrypoint | `what/run-api.md` |
 | Add or modify a provider | `what/provider-contract.md` + `how/provider-architecture.md` |
 | Understand env vars and deployment | `what/configuration.md` |
 | Navigate the codebase | `how/project-structure.md` |
-| Understand health probes | `what/health-probes.md` |
+| Understand readiness checks | `what/health-probes.md` |
 | Understand audit logging | `what/audit-logging.md` |
 | Understand E2E testing | `what/e2e-testing.md` |
 
@@ -57,7 +57,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | `what/run-api.md` | `how/provider-architecture.md` (data flow section) |
 | `what/provider-contract.md` | `how/provider-architecture.md` |
 | `what/configuration.md` | `how/provider-architecture.md` (container build, implementation notes) |
-| `what/health-probes.md` | `how/project-structure.md` (health.py entry) |
+| `what/health-probes.md` | `how/project-structure.md` (readiness.py) |
 | `what/audit-logging.md` | `how/provider-architecture.md` (observability integration) |
 
 ## Conventions
@@ -71,6 +71,6 @@ AI agents. Content is optimized for precision and machine consumption.
 
 ## Project Context
 
-This is the agent runtime that runs inside ephemeral sandbox pods. The operator sends requests to `POST /v1/agent/run` and receives structured JSON responses. The runtime wraps multiple LLM provider SDKs (DeepAgents, Gemini, OpenAI) behind a single interface.
+This is the agent runtime that runs inside ephemeral sandbox pods. The operator mounts input files at `/input/`, starts the batch container, and reads the Result CR and pod exit status. The runtime wraps multiple LLM provider SDKs (DeepAgents, Gemini, OpenAI) behind a single interface. Result CR publishing uses the Kubernetes Python client, not `oc`.
 
 Jira tracking: Feature OCPSTRAT-3095, Epic OLS-2894.

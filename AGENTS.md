@@ -1,7 +1,7 @@
 # Lightspeed Agentic Sandbox
 
-Multi-provider agentic sandbox for OpenShift Lightspeed. This repo exposes a
-FastAPI app plus provider adapters for DeepAgents (Anthropic), Gemini, and OpenAI.
+Multi-provider agentic sandbox for OpenShift Lightspeed. This repo runs as a
+one-shot batch process plus provider adapters for DeepAgents (Anthropic), Gemini, and OpenAI.
 When editing it, optimize for thin provider wrappers, consistent event mapping,
 and tests that stay offline unless you are intentionally running containerized
 evals.
@@ -67,8 +67,8 @@ Before changing code, read the relevant spec:
 |---|---|
 | System overview, integration boundaries | [system-overview.md](.ai/spec/what/system-overview.md) |
 | Provider adapters | [provider-contract.md](.ai/spec/what/provider-contract.md) |
-| /run endpoint | [run-api.md](.ai/spec/what/run-api.md) |
-| Health probes | [health-probes.md](.ai/spec/what/health-probes.md) |
+| Batch entrypoint | [run-api.md](.ai/spec/what/run-api.md) |
+| Readiness checks | [health-probes.md](.ai/spec/what/health-probes.md) |
 | Deployment, env vars, or defaults | [configuration.md](.ai/spec/what/configuration.md) |
 | Audit / OTel / metrics | [audit-logging.md](.ai/spec/what/audit-logging.md) |
 | E2E harness or BDD scenarios | [e2e-testing.md](.ai/spec/what/e2e-testing.md) |
@@ -79,16 +79,16 @@ cover the "why" and the "must."
 
 ### Component Specs
 
-Each spec has a Verification section linking to BDD feature files that exercise
-its rules. Use this table to navigate from component → spec → executable tests:
+Each spec has a Verification section linking to tests that exercise its rules.
+Use this table to navigate from component → spec → executable tests:
 
-| Spec | Description | Feature files |
+| Spec | Description | Verification |
 |---|---|---|
-| [run-api.md](.ai/spec/what/run-api.md) | POST /run: context prefix, timeouts, error envelopes, response shaping | [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature) |
-| [health-probes.md](.ai/spec/what/health-probes.md) | Liveness and readiness probes | [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature) |
-| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature) |
-| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [structured_output.feature](tests/e2e/features/structured_output.feature), [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature) (implicit) |
-| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Container BDD harness, live vs unit split, run modes | [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature) |
+| [run-api.md](.ai/spec/what/run-api.md) | Batch entrypoint: input files, context prefix, timeouts, Result CR publishing | [test_batch.py](tests/test_batch.py), [test_batch_input.py](tests/test_batch_input.py), [test_run_agent.py](tests/test_run_agent.py), [test_publish_results_publish.py](tests/test_publish_results_publish.py), [test_publish_results_status.py](tests/test_publish_results_status.py) |
+| [health-probes.md](.ai/spec/what/health-probes.md) | Readiness checks at batch startup (R1) | [test_ready.py](tests/test_ready.py), [test_batch.py](tests/test_batch.py) (readiness fail-fast) |
+| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py); live: [skills.feature](tests/e2e/features/skills.feature); legacy HTTP: [structured_output.feature](tests/e2e/features/structured_output.feature) |
+| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_resolution.py](tests/test_model_resolution.py), [test_config.py](tests/test_config.py) |
+| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Container BDD harness, live vs unit split, run modes | Legacy HTTP BDD: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature); live: [skills.feature](tests/e2e/features/skills.feature) |
 
 ## Quick Commands
 
@@ -108,26 +108,26 @@ make eval-report                       # write evals/report.json
 
 ```text
 src/lightspeed_agentic/
-├── app.py                # FastAPI entry; resolve_sdk, provider, router, metrics, tracer lifespan
+├── batch.py              # Batch entrypoint: read /input, run agent, publish Result CR
+├── run_agent.py          # run_agent_query(), format_context_prefix()
 ├── config.py             # LIGHTSPEED_* → SDK env mapping; resolve_sdk(); reasoning parse
 ├── factory.py            # create_provider(name) — SDK name from config.resolve_sdk()
-├── health.py             # GET /health, GET /ready
+├── readiness.py          # R1 credential checks; run_readiness_checks() at batch startup
 ├── mcp.py                # parse_mcp_servers(); header resolution
 ├── audit.py              # AuditLogger GenAI spans/events
-├── metrics.py            # Prometheus /metrics
+├── metrics.py            # Prometheus histograms (in-process; no /metrics route)
 ├── tracing.py            # TracerProvider, traceparent helpers
 ├── logging.py            # EventLogger (debug thinking buffer)
 ├── skills.py             # has_skills() — SKILL.md presence under cwd
 ├── tools.py              # DEFAULT_ALLOWED_TOOLS only
 ├── types.py              # Provider events, query options, AgentProvider ABC
+├── publish_results/
+│   ├── publish.py        # Result CR via kubernetes CustomObjectsApi
+│   └── status.py         # Status assembly (conditions, failureReason)
 ├── providers/
 │   ├── deepagents.py     # deepagents (langchain-anthropic) adapter
 │   ├── gemini.py         # google-adk adapter
 │   └── openai.py         # openai-agents adapter
-└── routes/
-    ├── __init__.py       # build_router(...)
-    ├── query.py          # POST /run endpoint
-    └── models.py         # Pydantic request/response models
 ```
 
 | Feature | DeepAgents (`deepagents`) | Gemini (`google-adk`) | OpenAI (`openai-agents`) |
@@ -149,9 +149,7 @@ adapters or put path helpers in `tools.py`.
   package import path.
 - `types.py` event objects are frozen dataclasses. New event types should follow
   the same pattern and stay simple to serialize/log.
-- Route payloads use Pydantic models in `routes/models.py`.
-  Prefer extending those models over passing around untyped dicts.
-- Providers yield async event streams; the query handler consumes async
+- Providers yield async event streams; `run_agent_query()` consumes async
   iterators and waits for the final result event.
 - Preserve the "thin adapter" shape when touching provider files: map SDK
   events into `ProviderEvent`, do not re-implement SDK behavior locally unless a
@@ -162,12 +160,11 @@ adapters or put path helpers in `tools.py`.
 - `make test` is the default verification path for code changes. Unit tests use
   mocked providers and must not require live credentials.
 - Put reusable fake providers and event fixtures in `tests/conftest.py`.
-  Prefer exercising real route/provider glue over deep mocking of SDK internals.
-- Route tests should build a FastAPI app with `build_router(...)` and use
-  `httpx.AsyncClient` plus `ASGITransport`.
-- `make eval` and `make eval-report` are integration-only checks. They build the
-  container image, start one container per provider, and run evals against live
-  `/v1/agent/run` endpoints.
+  Prefer exercising real batch/run_agent glue over deep mocking of SDK internals.
+- Unit tests cover `batch.py`, `run_agent.py`, and `readiness.py` with mocked
+  providers and Kubernetes client — no live API calls.
+- `make eval` and `make eval-report` are integration-only checks. They still use
+  HTTP against live containers ([PLANNED: migrate to batch entrypoint]).
 - See [`evals/README.md`](evals/README.md) for eval setup, credential handling,
   provider coverage, and report details.
 - Evals are container-only. If you change eval workspace fixtures, skills, or
@@ -236,10 +233,10 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `LIGHTSPEED_PROVIDER_REGION` | Cloud region (Vertex, Bedrock) |
 | `LIGHTSPEED_PROVIDER_API_VERSION` | API version (Azure) |
 | `LIGHTSPEED_AUDIT_ENABLED` | Enable audit span exporters / choice events (see audit-logging.md) |
-| `LIGHTSPEED_CAPTURE_CONTENT` | Opt-in content attributes on choice events |
+| `LIGHTSPEED_CAPTURE_CONTENT` | Opt-out (`false`) for content on `gen_ai.choice` events; defaults on when audit is enabled |
 | `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs |
 | `LIGHTSPEED_REASONING_CONFIG` | JSON object with reasoning/thinking params, parsed at startup, passed to adapters |
-| `LIGHTSPEED_SKILLS_DIR` | Skills root mounted by the FastAPI app, default `/app/skills` |
+| `LIGHTSPEED_SKILLS_DIR` | Skills root mounted in the sandbox pod, default `/app/skills` |
 | `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog); set by operator with OTEL endpoint |
 | `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on bridged OTLP log records |
 | `ANTHROPIC_MODEL` | Default Anthropic model for query routes |
