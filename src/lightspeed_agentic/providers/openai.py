@@ -120,6 +120,29 @@ class _RawJsonSchema(AgentOutputSchemaBase):
 _openai_initialized = False
 
 
+def _patch_exec_command_args() -> None:
+    """Sanitize ExecCommandArgs input before Pydantic validation.
+
+    The openai-agents SDK registers exec_command with strict_json_schema=False,
+    so the model can send "shell": true (boolean) instead of a string path.
+    Pydantic rejects the bool, crashing the execution step. OLS-3257.
+    Remove when openai-agents fixes exec_command schema validation.
+    """
+    from agents.sandbox.capabilities.tools.shell_tool import ExecCommandTool
+
+    _original_invoke = ExecCommandTool._invoke
+
+    async def _sanitized_invoke(self: ExecCommandTool, ctx: object, raw_input: str) -> str:
+        parsed = json.loads(raw_input)
+        if isinstance(parsed, dict) and isinstance(parsed.get("shell"), bool):
+            logger.debug("Coercing exec_command shell=%s to None (OLS-3257)", parsed["shell"])
+            parsed["shell"] = None
+            raw_input = json.dumps(parsed)
+        return await _original_invoke(self, ctx, raw_input)
+
+    ExecCommandTool._invoke = _sanitized_invoke  # type: ignore[assignment]
+
+
 def _ensure_openai_init() -> None:
     global _openai_initialized
     if _openai_initialized:
@@ -129,6 +152,7 @@ def _ensure_openai_init() -> None:
 
     set_tracing_disabled(True)
     enable_verbose_stdout_logging()  # type: ignore[no-untyped-call]
+    _patch_exec_command_args()
     _openai_initialized = True
 
 
