@@ -117,6 +117,7 @@ src/lightspeed_agentic/
 ├── metrics.py            # Prometheus /metrics
 ├── tracing.py            # TracerProvider, traceparent helpers
 ├── logging.py            # EventLogger (debug thinking buffer)
+├── skills.py             # has_skills() — SKILL.md presence under cwd
 ├── tools.py              # DEFAULT_ALLOWED_TOOLS only
 ├── types.py              # Provider events, query options, AgentProvider ABC
 ├── providers/
@@ -137,8 +138,9 @@ src/lightspeed_agentic/
 | Streaming | `astream(stream_mode="messages")` | `StreamingMode.SSE` | `Runner.run_streamed()` |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
-discovery; `tools.py` holds the shared allowlist constant only — do not invent
-shared path helpers there.
+discovery; `tools.py` holds the shared allowlist constant only. The SKILL.md
+presence gate lives in `skills.py` (`has_skills`) — do not duplicate it in
+adapters or put path helpers in `tools.py`.
 
 ## Code Conventions
 
