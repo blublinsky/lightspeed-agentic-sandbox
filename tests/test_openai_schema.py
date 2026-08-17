@@ -1,5 +1,6 @@
-"""Tests for OpenAI provider strict schema transform."""
+"""Tests for OpenAI provider strict schema transform and input sanitization."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -305,3 +306,44 @@ async def test_skills_path_missing_dir_does_not_error(
     events, _ = await _run_openai_provider(str(tmp_path))
     assert any(isinstance(e, ContentBlockStopEvent) for e in events)
     assert any(isinstance(e, ResultEvent) for e in events)
+
+
+class TestExecCommandShellCoercion:
+    """OLS-3257: model sends shell:bool instead of shell:string."""
+
+    @pytest.fixture(autouse=True)
+    def _init_openai(self):
+        from lightspeed_agentic.providers.openai import _ensure_openai_init
+
+        _ensure_openai_init()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("shell_input", "expected"),
+        [
+            (True, None),
+            (False, None),
+            ("/bin/bash", "/bin/bash"),
+            (None, None),
+        ],
+        ids=["bool-true", "bool-false", "string-path", "null"],
+    )
+    async def test_shell_coercion(self, shell_input, expected):
+        from agents.sandbox.capabilities.tools.shell_tool import ExecCommandTool
+
+        raw_input = json.dumps({"cmd": "echo hello", "shell": shell_input})
+        captured: list = []
+        original_run = ExecCommandTool.run
+
+        async def mock_run(_self, args):
+            captured.append(args.shell)
+            return "ok"
+
+        ExecCommandTool.run = mock_run
+        try:
+            tool = ExecCommandTool.__new__(ExecCommandTool)
+            tool.args_model = ExecCommandTool.args_model
+            await tool._invoke(None, raw_input)
+            assert captured == [expected]
+        finally:
+            ExecCommandTool.run = original_run
