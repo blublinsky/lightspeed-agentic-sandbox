@@ -48,6 +48,18 @@ from lightspeed_agentic.types import (
 logger = logging.getLogger(__name__)
 
 
+def _has_skills(cwd: str) -> bool:
+    """Return True when at least one subdirectory of *cwd* contains a SKILL.md."""
+    try:
+        for entry in os.listdir(cwd):
+            child = os.path.join(cwd, entry)
+            if os.path.isdir(child) and os.path.isfile(os.path.join(child, "SKILL.md")):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _make_strict(schema: dict[str, Any]) -> dict[str, Any]:
     """Add additionalProperties:false and required:[all props] to all objects recursively."""
     if not isinstance(schema, dict):
@@ -231,16 +243,19 @@ class OpenAIProvider(AgentProvider):
             self._client = AsyncOpenAI(base_url=os.environ.get("OPENAI_BASE_URL"))
         model = OpenAIResponsesModel(model=options.model, openai_client=self._client)
 
-        capabilities = [
+        capabilities: list[Any] = [
             Shell(),
             Filesystem(),
-            Skills(
-                lazy_from=LocalDirLazySkillSource(
-                    source=LocalDir(src=Path(options.cwd)),
-                ),
-                skills_path="skills/.agents",
-            ),
         ]
+        if _has_skills(options.cwd):
+            capabilities.append(
+                Skills(
+                    lazy_from=LocalDirLazySkillSource(
+                        source=LocalDir(src=Path(options.cwd)),
+                    ),
+                    skills_path="skills/.agents",
+                ),
+            )
 
         # Manifest root is cwd's parent (/app) so exec_command can reach the full workspace.
         manifest = _build_manifest(str(Path(options.cwd).parent))

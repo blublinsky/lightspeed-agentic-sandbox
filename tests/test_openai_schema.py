@@ -273,12 +273,15 @@ def _run_openai_provider(cwd: str):
 
 
 @pytest.mark.asyncio
-async def test_skills_path_set_to_skills_agents(
+async def test_skills_registered_when_skill_md_exists(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Skills capability must use skills_path='skills/.agents', not the SDK default."""
+    """Skills capability must be registered when a subdirectory contains SKILL.md."""
     monkeypatch.delenv("E2E_OUTPUT_DIR", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    (tmp_path / "my-skill").mkdir()
+    (tmp_path / "my-skill" / "SKILL.md").write_text("# skill")
 
     _, mock_cls = await _run_openai_provider(str(tmp_path))
 
@@ -292,20 +295,21 @@ async def test_skills_path_set_to_skills_agents(
 
 
 @pytest.mark.asyncio
-async def test_skills_path_missing_dir_does_not_error(
+async def test_skills_capability_omitted_when_no_skill_md(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Provider completes without error when skills/.agents doesn't exist under cwd."""
+    """Skills capability must not be registered when no SKILL.md exists under cwd."""
     monkeypatch.delenv("E2E_OUTPUT_DIR", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    assert not (tmp_path / "skills" / ".agents").exists()
+    _, mock_cls = await _run_openai_provider(str(tmp_path))
 
-    from lightspeed_agentic.types import ContentBlockStopEvent, ResultEvent
+    capabilities = mock_cls.call_args.kwargs["capabilities"]
 
-    events, _ = await _run_openai_provider(str(tmp_path))
-    assert any(isinstance(e, ContentBlockStopEvent) for e in events)
-    assert any(isinstance(e, ResultEvent) for e in events)
+    from agents.sandbox.capabilities import Skills
+
+    skills_caps = [c for c in capabilities if isinstance(c, Skills)]
+    assert len(skills_caps) == 0
 
 
 class TestExecCommandShellCoercion:
