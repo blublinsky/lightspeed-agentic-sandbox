@@ -13,6 +13,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from lightspeed_agentic.skills import has_skills
 from lightspeed_agentic.types import (
     AgentProvider,
     ContentBlockStopEvent,
@@ -37,18 +38,6 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "number": float,
     "boolean": bool,
 }
-
-
-def _has_skills(cwd: str) -> bool:
-    """Return True when at least one subdirectory of *cwd* contains a SKILL.md."""
-    try:
-        for entry in os.listdir(cwd):
-            child = os.path.join(cwd, entry)
-            if os.path.isdir(child) and os.path.isfile(os.path.join(child, "SKILL.md")):
-                return True
-    except OSError:
-        pass
-    return False
 
 
 def _resolve_model(model: str, reasoning_config: dict[str, Any] | None = None) -> Any:
@@ -200,7 +189,7 @@ class DeepAgentsProvider(AgentProvider):
             "system_prompt": options.system_prompt,
         }
 
-        if _has_skills(options.cwd):
+        if has_skills(options.cwd):
             agent_kwargs["skills"] = [options.cwd]
 
         if options.output_schema:
