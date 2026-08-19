@@ -121,10 +121,13 @@ ENV PATH="/usr/local/bin:${PATH}"
 
 USER 1001:1001
 
-EXPOSE 8080
+# One-shot batch: no HTTP server and no long-lived process to probe. Readiness runs
+# in-process at startup (readiness.py). Kubernetes probes are defined on the Pod
+# by the operator, not via image HEALTHCHECK.
+HEALTHCHECK NONE
 
 ENTRYPOINT ["/usr/bin/catatonit", "--"]
-CMD ["python3.12", "-m", "uvicorn", "lightspeed_agentic.app:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python3.12", "-m", "lightspeed_agentic.batch"]
 
 LABEL name="openshift-lightspeed/lightspeed-agentic-sandbox-rhel9" \
       summary="Multi-provider agent sandbox for OpenShift Lightspeed" \

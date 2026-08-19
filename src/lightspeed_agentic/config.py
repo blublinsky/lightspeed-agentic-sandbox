@@ -24,17 +24,13 @@ def _llm_credentials_path() -> str:
     return override or LLM_CREDENTIALS_PATH
 
 
-_DEFAULT_VERTEX_REGION = "us-east5"
-_DEFAULT_BEDROCK_REGION = "us-east-1"
-
-
 @dataclasses.dataclass(frozen=True)
 class ResolvedSDK:
     """Result of resolving LIGHTSPEED_* env vars to an SDK backend."""
 
     name: str  # "deepagents", "gemini", "openai"
     expected_envs: tuple[str, ...]  # credential env vars expected from envFrom
-    probe_url: str  # R2 reachability probe base URL
+    credential_file_envs: tuple[str, ...] = ()  # env vars whose value is a credentials file path
 
 
 def _setenv(key: str, value: str) -> None:
@@ -46,24 +42,12 @@ def _setenv_if_value(key: str, value: str | None) -> None:
         _setenv(key, value)
 
 
-def _vertex_probe_url(region: str | None) -> str:
-    r = region or _DEFAULT_VERTEX_REGION
-    return f"https://{r}-aiplatform.googleapis.com/"
-
-
-def _bedrock_probe_url(region: str | None) -> str:
-    r = region or _DEFAULT_BEDROCK_REGION
-    return f"https://bedrock-runtime.{r}.amazonaws.com/"
-
-
 def _resolve_anthropic(model: str | None, url: str | None) -> ResolvedSDK:
     _setenv_if_value("ANTHROPIC_MODEL", model)
     _setenv_if_value("ANTHROPIC_BASE_URL", url)
-    probe = url or "https://api.anthropic.com/"
     return ResolvedSDK(
         "deepagents",
         ("ANTHROPIC_API_KEY",),
-        probe,
     )
 
 
@@ -76,8 +60,6 @@ def _resolve_vertex(
 ) -> ResolvedSDK:
     if not model_provider:
         raise ValueError("LIGHTSPEED_MODEL_PROVIDER is required when LIGHTSPEED_PROVIDER=vertex")
-
-    vertex_probe = _vertex_probe_url(region)
 
     match model_provider:
         case "anthropic":
@@ -93,7 +75,7 @@ def _resolve_vertex(
             return ResolvedSDK(
                 "deepagents",
                 ("GOOGLE_APPLICATION_CREDENTIALS",),
-                url or vertex_probe,
+                ("GOOGLE_APPLICATION_CREDENTIALS",),
             )
         case "google":
             _setenv_if_value("GEMINI_MODEL", model)
@@ -107,7 +89,7 @@ def _resolve_vertex(
             return ResolvedSDK(
                 "gemini",
                 ("GOOGLE_APPLICATION_CREDENTIALS",),
-                url or vertex_probe,
+                ("GOOGLE_APPLICATION_CREDENTIALS",),
             )
         case "openai":
             _setenv_if_value("OPENAI_MODEL", model)
@@ -119,7 +101,7 @@ def _resolve_vertex(
             return ResolvedSDK(
                 "openai",
                 ("GOOGLE_APPLICATION_CREDENTIALS",),
-                url or vertex_probe,
+                ("GOOGLE_APPLICATION_CREDENTIALS",),
             )
         case _:
             raise ValueError(
@@ -134,7 +116,6 @@ def _resolve_openai(model: str | None, url: str | None) -> ResolvedSDK:
     return ResolvedSDK(
         "openai",
         ("OPENAI_API_KEY",),
-        url or "https://api.openai.com/",
     )
 
 
@@ -149,7 +130,6 @@ def _resolve_azure(
     return ResolvedSDK(
         "openai",
         ("AZURE_OPENAI_API_KEY",),
-        url or "",
     )
 
 
@@ -165,7 +145,6 @@ def _resolve_bedrock(
     return ResolvedSDK(
         "deepagents",
         ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
-        url or _bedrock_probe_url(region),
     )
 
 
@@ -221,3 +200,45 @@ def parse_reasoning_config() -> dict[str, Any] | None:
         )
 
     return parsed
+
+
+_MODEL_ENV_VARS = {
+    "deepagents": "ANTHROPIC_MODEL",
+    "gemini": "GEMINI_MODEL",
+    "openai": "OPENAI_MODEL",
+}
+
+
+def _model_env_var(provider_name: str) -> str:
+    """Return the SDK model env var for a resolved provider name."""
+    env_var = _MODEL_ENV_VARS.get(provider_name)
+    if env_var is None:
+        supported = ", ".join(sorted(_MODEL_ENV_VARS))
+        raise ValueError(f"Unknown SDK provider: {provider_name!r}. Supported: {supported}")
+    return env_var
+
+
+def resolve_startup_model(provider_name: str) -> str | None:
+    """Return startup model hint for logging; None when only defaults apply."""
+    lightspeed_model = os.environ.get("LIGHTSPEED_MODEL", "").strip()
+    if lightspeed_model:
+        return lightspeed_model
+    env_var = _model_env_var(provider_name)
+    sdk_model = os.environ.get(env_var, "").strip()
+    return sdk_model or None
+
+
+def resolve_router_model(provider_name: str, model: str | None = None) -> str:
+    """Resolve model per configuration.md rule 5."""
+    from lightspeed_agentic.types import DEFAULT_MODEL
+
+    if model:
+        return model
+    lightspeed_model = os.environ.get("LIGHTSPEED_MODEL", "").strip()
+    if lightspeed_model:
+        return lightspeed_model
+    env_var = _model_env_var(provider_name)
+    sdk_model = os.environ.get(env_var, "").strip()
+    if sdk_model:
+        return sdk_model
+    return DEFAULT_MODEL

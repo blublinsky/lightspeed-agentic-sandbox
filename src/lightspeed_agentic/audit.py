@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, StatusCode
 
@@ -13,19 +14,9 @@ from lightspeed_agentic.tracing import get_tracer
 from lightspeed_agentic.types import ProviderEvent
 
 
-def derive_phase(context: dict[str, Any] | None) -> str:
-    if not context:
-        return "analysis"
-    if "phase" in context:
-        return str(context["phase"])
-    if "executionResult" in context:
-        return "verification"
-    if "approvedOption" in context:
-        return "execution"
-    return "analysis"
-
-
 class AuditLogger:
+    """Map provider stream events to OTel tool spans and ``gen_ai.choice`` span events."""
+
     def __init__(
         self,
         *,
@@ -36,6 +27,12 @@ class AuditLogger:
         capture_content: bool = False,
         agenticrun_uid: str = "",
     ) -> None:
+        """Configure audit emission for one agent run.
+
+        ``phase`` is the workflow step (``analysis``, ``execution``, …) from
+        ``result-template.kind``. When ``enabled`` is false, buffers are cleared
+        without emitting span events.
+        """
         self._phase = phase
         self._model = model
         self._provider = provider
@@ -50,9 +47,11 @@ class AuditLogger:
         self._parent_context: Context | None = None
 
     def set_parent_context(self, ctx: Context) -> None:
+        """Set OTel context so tool spans are children of the inference span."""
         self._parent_context = ctx
 
     def process_event(self, event: ProviderEvent) -> None:
+        """Consume one normalized provider event; buffer text or open/close tool spans."""
         match event.type:
             case "text_delta":
                 self._text_buffer.append(event.text)
@@ -115,6 +114,7 @@ class AuditLogger:
         response_model: str = "",
         span: Any = None,
     ) -> None:
+        """Flush buffers, close open tool spans, and stamp usage on the inference span."""
         self._flush_buffers(span)
         for _call_id, (tool_span, start) in self._tool_spans.items():
             tool_name = (
@@ -139,13 +139,13 @@ class AuditLogger:
                 span.set_status(StatusCode.ERROR, "agent run failed")
 
     def _flush_buffers(self, explicit_span: Any = None) -> None:
+        """Emit buffered completion/thinking text as ``gen_ai.choice`` span events."""
         if not self._enabled:
             if self._text_buffer:
                 self._text_buffer.clear()
             if self._thinking_buffer:
                 self._thinking_buffer.clear()
             return
-        from opentelemetry import trace
 
         span = explicit_span or trace.get_current_span()
         if not span or not span.is_recording():

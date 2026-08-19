@@ -5,36 +5,35 @@ Package tree: `AGENTS.md`. Behavioral rules: `what/run-api.md`, `what/provider-c
 
 ## Data Flow
 
-1. Startup: `config.resolve_sdk()` maps `LIGHTSPEED_*` → SDK env; `parse_reasoning_config()`; `create_provider(sdk.name)`; `build_router(...)`; register health + metrics; lifespan initializes tracer.
-2. Client (operator) `POST /v1/agent/run` with JSON body and optional `traceparent` / `x-agenticrun-uid`.
-3. FastAPI validates `RunRequest`; `run_endpoint` computes timeout, system prompt, optional context prefix + query; may resolve MCP servers via `mcp.parse_mcp_servers()`.
-4. Handler calls `provider.query(ProviderQueryOptions(...))` with model, turns, budget, tools, cwd, schema, reasoning_config, and resolved MCP server configs.
-5. Handler async-iterates events; `EventLogger` and `AuditLogger` side effects; metrics updated; stops at first `result` event.
-6. Handler parses `result.text` as JSON object or falls back to plain summary; returns `RunResponse`.
+1. Startup: `batch.main()` reads `/input/`, then calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` (fail-fast on bad env), `run_readiness_checks()`, `init_tracer()` when `otel_runtime_enabled()`, and `create_provider()`.
+2. `run_agent_query()` applies context prefix, passes pre-parsed `mcp_servers` into `ProviderQueryOptions`, and calls `provider.query(...)`.
+3. Handler async-iterates events; `EventLogger` and `AuditLogger` side effects; metrics histograms updated; stops at first `result` event.
+4. `publish_agent_result()` builds status from agent output, creates Result CR via Kubernetes API (`create_namespaced_custom_object`), replaces status (`replace_namespaced_custom_object_status`).
+5. `shutdown_tracer()`; exit 0 on sandbox success (including agent failure), non-zero on infrastructure failure with termination log.
 
 ## Key Abstractions
 
 - **Config mapping:** `resolve_sdk()` owns env → SDK name; factory does not read provider env vars.
 - **Factory:** `create_provider(name)` lazy-imports the selected adapter.
-- **Events:** Normalized `ProviderEvent` union decouples route layer from vendor streaming models.
+- **Events:** Normalized `ProviderEvent` union decouples agent layer from vendor streaming models.
 - **Options:** `ProviderQueryOptions` is the single bundle passed into every adapter (includes `mcp_servers`, `reasoning_config`).
-- **Router builder:** Env-based model resolution and default router parameters.
+- **Model resolution:** `resolve_router_model()` / `resolve_startup_model()` in `config.py`.
+- **Result publishing:** `publish_results/publish.py` + `status.py` — Kubernetes client, no `oc` subprocess.
 
 ## Integration Points
 
-- **FastAPI / Uvicorn:** ASGI entry `lightspeed_agentic.app:app`.
-- **deepagents (+ langchain-anthropic, langchain-google-vertexai, langchain-aws, langchain-mcp-adapters):** `create_deep_agent`, `LocalShellBackend`, `ChatAnthropic` / Vertex / Bedrock, MCP via `MultiServerMCPClient`.
-- **google-adk / google.genai:** `Agent`, `Runner`, `InMemorySessionService`, `ExecuteBashTool`, `SkillToolset`. MCP via `McpToolset` + `StreamableHTTPConnectionParams`.
+- **Batch entrypoint:** `python -m lightspeed_agentic.batch` (`batch.py`).
+- **Kubernetes API:** `kubernetes` Python client for Result CR create + status update (ServiceAccount token).
+- **deepagents (+ langchain-anthropic, langchain-google-vertexai, langchain-aws, langchain-mcp-adapters):** `create_deep_agent`, `LocalShellBackend`, MCP via `MultiServerMCPClient`.
+- **google-adk / google.genai:** `Agent`, `Runner`, `ExecuteBashTool`, `SkillToolset`. MCP via `McpToolset` + `StreamableHTTPConnectionParams`.
 - **openai-agents (+ openai):** `SandboxAgent`, `Runner`, `UnixLocalSandboxClient`. MCP via `MCPServerStreamableHttp`.
-- **OpenTelemetry / Prometheus:** `tracing.py` TracerProvider; `audit.py` GenAI spans/events; `metrics.py` `/metrics`.
+- **OpenTelemetry:** `tracing.py` TracerProvider; `audit.py` GenAI spans/events; `metrics.py` in-process Prometheus histograms (no `/metrics` route).
 
 ## Implementation Notes
 
 - **DeepAgents model routing:** `_resolve_model()` checks `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_BEDROCK`.
-- **DeepAgents thinking:** From `AIMessage` content / content_blocks; yield `ThinkingDeltaEvent` then `ContentBlockStopEvent`.
 - **DeepAgents streaming:** `astream(stream_mode="messages")`.
 - **Gemini bash:** Monkey-patches `run_async` for confirmation and `bash -c` wrapping.
-- **OpenAI init:** One-time verbose logging and tracing disable.
-- **MCP Secret headers:** Read first file (sorted by name) under `/var/secrets/mcp/<secretName>/` — see `what/configuration.md` (current behavior; stricter path was an orphan promise).
-- **Containerfile:** Multi-stage hermetic Python/RPM build; `oc`/`kubectl` from ose-cli stage; no ripgrep install; user `agent`; `catatonit`; Uvicorn on 8080.
-- **Tests / evals:** HTTP clients target `POST /v1/agent/run` (see `tests/` and `evals/`).
+- **MCP Secret headers:** First file (sorted by name) under `/var/secrets/mcp/<secretName>/`.
+- **Containerfile:** Multi-stage hermetic build; `oc`/`kubectl` in image for **agent tools** (not Result CR publishing); user `agent`; `catatonit`; batch CMD.
+- **Unit tests:** `test_run_agent.py`, `test_batch.py`, `test_ready.py`, `test_publish_results_*.py`. **Evals/e2e** still target removed HTTP API — pending migration.

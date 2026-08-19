@@ -1,143 +1,127 @@
-# Behavioral spec: Run API
+# Behavioral spec: Batch entrypoint
 
 Audience: AI agents (Claude). Precision over narrative.
 
-Cross-references: provider behavior and events → `provider-contract.md`. Env defaults and ports → `configuration.md`.
+Cross-references: provider behavior and events → `provider-contract.md`. Env defaults → `configuration.md`. Result CR publishing → `publish_results/` in `how/project-structure.md`.
 
-> **[OLS-3066] Batch execution model planned.** The HTTP API (rules 1–24 below) is the current implementation. OLS-3066 replaces it with a batch entrypoint: the sandbox reads input from a ConfigMap volume mount, runs the agent, creates a Result CR via `oc`, and exits. See the "Batch Entrypoint" section at the end of this file for the target behavior. The HTTP rules below remain authoritative until OLS-3066 is implemented.
+The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP server** — no FastAPI routes, no `/health` or `/ready` probes, no inbound connections.
 
 ## Behavioral Rules
 
-1. **Operator integration boundary.** The Kubernetes operator (workflow engine) invokes the sandbox over HTTP using `POST /v1/agent/run` with a JSON body matching `RunRequest`. The sandbox returns `RunResponse` JSON. The operator carries step **input** via `query`, structured-output hints via `outputSchema`, and runtime envelope via `context`. [PLANNED: OLS-3491] Step **system instructions** are carried via `systemPrompt` (non-empty after operator materialization). Until OLS-3491, the operator may still send `systemPrompt` as empty and embed role text in `query`; the sandbox applies a default persona when `systemPrompt` is empty or omitted (see rule 5). The sandbox does not interpret workflow phase names.
+### Integration and lifecycle
 
-2. **Route mounting.** Agent routes are mounted under the path prefix `/v1/agent` on the FastAPI application. Probe routes (`/health`, `/ready`) are **not** under that prefix.
+1. **Operator integration boundary.** The operator mounts a ConfigMap at `/input/` and starts the sandbox container. The process reads files, runs the LLM agent, publishes a Result CR, and exits. The sandbox does not interpret workflow phase names — the operator carries step semantics via input files and `context`.
 
-3. **Canonical run endpoint.** `POST /v1/agent/run` accepts `RunRequest` and returns `RunResponse`.
+2. **No HTTP server.** The sandbox MUST NOT start a FastAPI/HTTP server. The process reads files, runs the agent, writes results, and exits.
 
-4. **RunRequest — `query` (required).** Step input / user task text (not system role instructions after OLS-3491). When `context` is present, the handler prepends a formatted context block to this text before sending the combined string to the provider (see rules 12–16).
+3. **Process entry.** The container runs `python -m lightspeed_agentic.batch` (via `catatonit` as PID 1). See `configuration.md` rule 14.
 
-5. **RunRequest — `systemPrompt`.** Optional. When omitted, null, or empty, the handler substitutes a fixed default assistant persona string. [PLANNED: OLS-3491] When the operator sends non-empty `systemPrompt`, the handler MUST use it as-is (full replacement of the default persona). The sandbox MUST NOT append the default persona to a non-empty caller `systemPrompt`.
+### Input files (`/input/`)
 
-6. **RunRequest — `outputSchema`.** Optional JSON-object schema. When present, forwarded to the provider as structured-output hints (see `provider-contract.md`). The HTTP response still follows `RunResponse` shaping rules (rules 18–22).
+4. **Required files.** The operator mounts a read-only ConfigMap at `/input/` with keys mapped to files:
+   - `/input/query` — step input text (must not embed role/system instructions after OLS-3491)
+   - `/input/output-schema` — JSON schema for structured agent output
+   - `/input/context` — JSON object (`targetNamespaces`, `previousAttempts`, `approvedOption`, `executionResult`, …)
+   - `/input/result-template` — pre-filled Result CR JSON (`apiVersion`, `kind`, `metadata`, `spec`); sandbox fills `status` only
 
-7. **RunRequest — `context`.** Optional object. When present, must be formatted by the rules in 12–16; unknown keys are ignored if not read by the formatter.
+5. **Optional system prompt.** `/input/system-prompt` — step system instructions. When the file is **absent** or empty, the sandbox uses the fixed default persona (`"You are an AI agent."`). Absence of this file is valid and MUST NOT be treated as an input-read failure (contrast rule 15).
 
-8. **RunRequest — `timeout_ms`.** Optional. When set, caps wall-clock time for consuming the provider event stream until the first `result` event. When omitted, a router-level default timeout applies (see `configuration.md`).
+6. **Input read failures.** When a required file cannot be read or JSON is invalid, the sandbox MUST treat this as a sandbox failure (rule 23).
 
-9. **Per-run spend ceiling.** The route passes a fixed USD budget cap into provider options. This cap is **not** configurable via `RunRequest`.
+### Agent execution
 
-10. **GET /health.** Returns a JSON object `{ "status": "ok" }` when the process is up (not mounted under `/v1/agent`). _(Authoritative definitions are in `what/health-probes.md`. These rules provide a summary; for full liveness/readiness probe semantics, see that file.)_
+7. **Provider startup.** The batch entrypoint calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` before any OTLP export or readiness I/O, then `run_readiness_checks()` (see `health-probes.md`), `init_tracer()`, `create_provider()`, and `resolve_router_model()` once per run. When readiness checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
 
-11. **GET /ready.** Readiness probe (not under `/v1/agent`). Returns HTTP 200 with `{ "status": "ok" }` when all checks pass; HTTP 503 with `{ "status": "error", "checks": { ... } }` when any check fails. Checks and semantics: `health-probes.md`. _(Authoritative definitions are in `what/health-probes.md`. These rules provide a summary; for full liveness/readiness probe semantics, see that file.)_
+8. **Agent query.** The sandbox runs `run_agent_query()` with system prompt, query, output schema, context, skills directory, model, MCP servers, and reasoning config. Tool execution (kubectl, oc) is unchanged — delegated to provider SDKs.
 
-12. **Context prefix — envelope.** When `context` is non-empty, the formatter produces a block that starts with a fixed marker line, ends with a closing marker line, and is prepended to `query` with separating newlines.
+9. **Per-run timeout.** Wall-clock limit for the provider event stream defaults to 300_000 ms. Override via `LIGHTSPEED_TIMEOUT_MS` (milliseconds). On timeout, agent output is `success=false` with a timed-out summary (same semantics as former HTTP rule 21).
 
-13. **Context — `targetNamespaces`.** When present and non-empty (list), include a line listing target namespaces as a comma-separated join.
+10. **Per-run spend ceiling.** A fixed USD budget cap is passed into provider options; not configurable via input files.
 
-14. **Context — `attempt`.** When present (any), include a line labeling the attempt with placeholder text for the maximum (literal substring `of max` in the line; the formatter does not inject the max value).
+11. **Allowed tools.** The default allowed-tools list is passed into provider options; callers cannot override via input files (see `provider-contract.md`).
 
-15. **Context — `previousAttempts`.** When present and non-empty (iterable of objects), include a header line then one bullet line per entry with attempt index and optional `failureReason`.
+### Context prefix formatting
 
-16. **Context — `approvedOption`.** When present and non-empty (object), append a bounded block: title, `diagnosis.rootCause`, and from `approvedOption.remediationPlan` the `description`, `risk`, `reversible` flag, and optional `actions` list (each with `command`, `type`, and `description`); surround with explicit “approved remediation” and “do not exceed listed actions” banners. Each action's `command` field contains the exact bash command (kubectl/oc) to execute.
+When `context` is non-empty, `format_context_prefix()` prepends a block to `query` before the provider call:
 
-17. **Stream consumption.** The handler iterates the provider async iterator until a `result` event; earlier events are logged but do not terminate the request. See `provider-contract.md` for event types.
+12. **Envelope.** Block starts with `[context]` and ends with `[/context]`, separated from query by newlines.
 
-18. **RunResponse — core fields.** Every response includes `success` (boolean) and `summary` (string). Additional keys are allowed on the response object.
+13. **`targetNamespaces`.** When present and non-empty, include a comma-separated namespace list.
 
-19. **Structured agent output.** When the final `result` text is JSON parsing as an object, the handler builds `RunResponse` with `success` from that object’s `success` key defaulting to true when absent, `summary` from `summary` defaulting to the raw result text when absent, and merges remaining keys as extra top-level fields.
+14. **`attempt`.** When present, include `Attempt: {n} of max` (literal `of max`; max not injected).
 
-20. **Text fallback.** When the final `result` text is not a JSON object (parse failure or non-object JSON), the handler returns `success=true` and `summary` equal to the full result text with no extra keys from parsing.
+15. **`previousAttempts`.** When present and non-empty, list each attempt with optional `failureReason`.
 
-21. **Timeout.** When waiting for the provider exceeds the effective timeout, the handler returns `success=false` and a summary string that states timeout and includes the timeout duration in milliseconds.
+16. **`approvedOption`.** When present, include title, diagnosis root cause, remediation plan description, reversible flag, and optional actions (command, type, description) within approved-remediation banners. When `approvedOption` or other expanded fields are present but malformed, `format_context_prefix()` MUST fail with a clear `Invalid context: …` message; `run_agent_query()` returns `success=false` with that summary (agent failure path, rule 22) and MUST NOT invoke the LLM.
 
-22. **Agent errors.** On any other exception during the provider call, the handler returns `success=false` and a summary prefixed with a fixed agent-error label and the exception message.
+### Agent output shaping
 
-23. **Empty result.** When the stream ends without non-empty final `result` text, the handler returns `success=false` with a fixed empty-response summary.
+The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunResponse` shaping):
 
-24. **Allowed tools.** The route passes the default allowed-tools list into provider options; callers cannot override via `RunRequest` (see `provider-contract.md`).
+17. **Structured JSON.** When final `result` text parses as a JSON object, `success` defaults to true when absent; `summary` defaults to raw text when absent; remaining keys are merged into the agent output dict.
+
+18. **Text fallback.** Non-object JSON or parse failure → `success=true`, `summary` = full result text.
+
+19. **Agent errors.** Provider exceptions → `success=false`, summary prefixed with agent-error label.
+
+20. **Empty result.** No non-empty final `result` text → `success=false`, fixed empty-response summary.
+
+### Result CR publishing
+
+21. **Success path.** On sandbox success (agent completed, including agent failure), the sandbox MUST:
+   - (a) merge agent structured output into Result CR `status` fields per step kind (`publish_results/status.py`),
+   - (b) set `status.conditions` with `Started=True` and `Completed=True` (`Started.lastTransitionTime` = wall clock immediately before `run_agent_query()`; `Completed` = after agent returns),
+   - (c) create the CR from `result-template` (metadata + spec) via the Kubernetes API,
+   - (d) update the CR `status` subresource via the Kubernetes API,
+   - (e) exit 0.
+
+22. **Agent failure path.** When agent output has `success=false` or rule 19–20 applies, the sandbox MUST still publish the Result CR with `status.failureReason` set from the agent summary, `Completed=True` with `reason=Failed` when applicable (`publish_results/status.py`), and **exit 0**. Exit 0 means the **sandbox process** completed its job (read input, ran agent, published Result CR); it does **not** mean the agent step succeeded.
+
+    The operator treats `PodSucceeded` (exit 0) as the signal to read the Result CR, then `validateResultCR` in `lightspeed-agentic-operator/controller/agenticrun/pod_handler.go` checks `status.failureReason` and `Completed.reason=Failed`. When either indicates agent failure, the operator sets the step condition to `False` with `ReasonSandboxFailed` and the CR message — **not** `ReasonSucceeded`. See operator `sandbox-execution.md` rule 8. Exit non-zero on this path would make `PodFailed`; the operator would use the termination log / exit code (rule 43e) and would **not** consume `failureReason` from the Result CR.
+
+23. **Sandbox failure path.** When input cannot be read, readiness checks fail, Kubernetes create/update fails, or any other infrastructure error occurs, the sandbox MUST write a human-readable message to `/dev/termination-log` (max 4096 bytes) and exit non-zero. The operator reads `pod.status.containerStatuses[].state.terminated.message` — **no Result CR is published** on this path (contrast rules 21–22).
+
+24. **Kubernetes API (not `oc`).** Publishing uses the `kubernetes` Python client (`CustomObjectsApi`): `create_namespaced_custom_object` for create (HTTP 409 AlreadyExists tolerated for idempotent retry), then `replace_namespaced_custom_object_status` for status. In a Kubernetes pod (`KUBERNETES_SERVICE_HOST` set), authentication MUST use in-cluster config only; if that fails, the sandbox MUST fail publish (sandbox failure path, rule 23) and MUST NOT fall back to a local kubeconfig file. Outside a cluster (local dev), `kubeconfig` MAY be used when in-cluster config is unavailable. The sandbox MUST NOT shell out to `oc` for Result CR lifecycle.
+
+25. **RBAC.** The sandbox ServiceAccount MUST have `create` and `update` (with `status` subresource) on `AnalysisResult`, `ExecutionResult`, `VerificationResult`, and `EscalationResult` in the AgenticRun namespace.
+
+### Observability
+
+26. **Tracing.** When `LIGHTSPEED_AUDIT_ENABLED=true` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set, `batch.main()` calls `init_tracer()` / `shutdown_tracer()` around the agent run. When both are unset, OTEL providers are not initialized (no exporters, no `LoggingHandler`). `LIGHTSPEED_AGENTICRUN_UID` and `LIGHTSPEED_AGENTICRUN_STEP` stamp spans and bridged OTLP logs when OTEL is active (see `audit-logging.md`). When the operator sets W3C `TRACEPARENT` on the pod, `batch.main()` passes it to `run_agent_query()` so the inference span is a child of the operator phase span. When `TRACEPARENT` is unset, the sandbox generates a new trace ID (graceful degradation).
+
+27. **Metrics.** Prometheus histograms (`metrics.py`) are recorded in-process during `run_agent_query()` for unit-test verification. The batch entrypoint MUST NOT expose `/metrics` and MUST NOT push or export histograms at shutdown (one-shot pods; use OTLP traces for operational token/duration signals — see `audit-logging.md` rule 19).
 
 ## Configuration Surface
 
 | Mechanism | Purpose |
 |-----------|---------|
-| `RunRequest.timeout_ms` | Per-request wall-clock limit for waiting on the first `result` event (milliseconds). |
-| Router `default_timeout_ms` | Used when `timeout_ms` is omitted (see `configuration.md`). |
-| `LIGHTSPEED_SKILLS_DIR` | Working directory / skill root forwarded as provider `cwd` (see `configuration.md`). |
+| `LIGHTSPEED_TIMEOUT_MS` | Per-run agent timeout (milliseconds); default 300_000 |
+| `LIGHTSPEED_SKILLS_DIR` | Skills root and provider `cwd` (default `/app/skills`) |
+| `resolve_router_model()` | Model from `LIGHTSPEED_MODEL` → SDK env → package default |
+| Input files under `/input/` | Query, schema, context, template, optional system prompt |
 
 ## Constraints
 
-- The handler does not expose `max_turns`, model id, provider id, or tool allowlists on `RunRequest`; those are fixed or environment-driven per `configuration.md` and router construction.
-- Streaming to the HTTP client is out of scope for `POST /run`; provider streaming may be used internally only if the adapter enables it (see `how/provider-architecture.md`).
+- `max_turns`, model id, provider id, and tool allowlists are not in input files; fixed or env-driven per `configuration.md`.
+- Provider streaming is internal only; no streaming to an HTTP client.
 
 ## Planned Changes
 
-- Operator payload may later include `llm` and `allowedTools` per target architecture docs; sandbox route does not read them today. [PLANNED: OLS-3033]
-- ~~TLS, network policy, and ingress hardening for the sandbox service. [PLANNED: OLS-3038–OLS-3043]~~ No longer applicable — OLS-3066 removes the HTTP server.
-- [PLANNED: OLS-3066] **Batch execution model** replaces the HTTP API. See "Batch Entrypoint" section below.
+- Operator may later pass `llm` and `allowedTools` via input or env. [PLANNED: OLS-3033]
+- `system-prompt` file as sole system-instructions carrier. [PLANNED: OLS-3491]
 
 ## Verification
 
-Harness scope (live vs unit, run modes, flake policy):
-[e2e-testing.md](e2e-testing.md).
-
-Two layers:
-
-1. **Unit tests** (`tests/test_routes.py`) — mocked provider, deterministic handler
-   behavior (timeouts, empty result, response shaping). Preferred for rules 21 and 23.
-2. **Container BDD** (`tests/e2e/features/`, `scripts/e2e-containers.sh`) — live
-   `/v1/agent/run` against one sandbox container per process with real credentials.
-
-Rules **10–11** (`/health`, `/ready`) are verified under `health-probes.md`, not here.
+Harness scope: [e2e-testing.md](e2e-testing.md). **Note:** container BDD scenarios still target the removed HTTP API; batch behavior is verified in unit tests until the harness is migrated.
 
 | Artifact | Rules exercised | Notes |
 |----------|-----------------|-------|
-| [structured_output.feature](../../../tests/e2e/features/structured_output.feature) | 3, 6, 18–20 | Live structured output and text fallback; adversarial schema stays HTTP 200 with envelope (rule 22 not triggered) |
-| [skills.feature](../../../tests/e2e/features/skills.feature) | 3, 18–20 | `/run` success paths with skills mounted (see `provider-contract.md`) |
-| [test_routes.py](../../../tests/test_routes.py) | 3, 5, 6, 8, 18–21, 23 | Mocked provider: `systemPrompt`, `outputSchema`, `timeout_ms`, timeout failure, empty result, text fallback |
-| [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Context prefix) | 4, 7, 12–16 | Live **targetNamespaces**, **previousAttempts**, and **approvedOption** echo via structured output; exact prefix strings in [test_routes.py](../../../tests/test_routes.py) |
-| [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) (Run error handling) | 21 | Live **timeout** only (`timeout_ms=1` → HTTP 200, `success=false`, timed-out summary). Rules 22–23 and no-500 adversarial path: `test_routes.py`, `structured_output.feature` |
+| [test_batch_input.py](../../../tests/test_batch_input.py) | 4–6 | Required/optional `/input` files |
+| [test_batch.py](../../../tests/test_batch.py) | 2, 7, 15, 21–23 | Entrypoint orchestration including readiness fail-fast (mocked) |
+| [test_run_agent.py](../../../tests/test_run_agent.py) | 8–20 | Agent query, context prefix, timeouts |
+| [test_ready.py](../../../tests/test_ready.py) | 7 | R1 readiness checks (`health-probes.md`) |
+| [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |
+| [test_publish_results_status.py](../../../tests/test_publish_results_status.py) | 21 | Status assembly from agent output |
+| [test_model_resolution.py](../../../tests/test_model_resolution.py) | 7 | Model env resolution |
 
----
-
-## [PLANNED: OLS-3066] Batch Entrypoint
-
-Replaces the HTTP API (rules 1–24) with a batch execution model. The sandbox runs as a one-shot process: read input, run agent, write output, exit.
-
-### Behavioral Rules (Batch)
-
-B1. **No HTTP server.** The sandbox MUST NOT start a FastAPI/HTTP server. There are no routes, no probes (`/health`, `/ready`), no inbound connections. The process reads files, runs the agent, writes results, and exits.
-
-B2. **Input files.** The operator mounts a ConfigMap at `/input/` (read-only) with keys:
-- `/input/query` — step input text (same content as the former `RunRequest.query`; after OLS-3491 this MUST NOT embed role/system instructions)
-- `/input/system-prompt` — [PLANNED: OLS-3491] optional step system instructions (same content as former `RunRequest.systemPrompt`). When absent or empty, the sandbox uses the fixed default persona (same as HTTP rule 5). **Absence of this file is valid input and MUST NOT be treated as a sandbox input-read failure** (contrast rule B6, which applies to required inputs that cannot be read).
-- `/input/output-schema` — JSON schema for structured output (same as former `RunRequest.outputSchema`)
-- `/input/context` — JSON object with `targetNamespaces`, `previousAttempts`, `approvedOption`, `executionResult` (same structure as former `RunRequest.context`)
-- `/input/result-template` — pre-filled Result CR JSON with `apiVersion`, `kind`, `metadata` (name, namespace, labels, ownerReferences), and `spec` (agenticRunName, retryIndex). The sandbox fills in `status` only.
-
-B3. **Agent execution.** The sandbox reads the input files, initializes the LLM provider (same provider adapters as today — unchanged), and runs the agent with the system prompt, query, output schema, and context. Tool execution (kubectl, oc) is unchanged. Skills and MCP servers are configured via environment variables and volume mounts (unchanged).
-
-B4. **Output — success path.** On successful agent completion, the sandbox MUST: (a) merge the agent's structured JSON output into the Result CR's `status` fields (options, diagnosis, actionRequired, actionsTaken, checks, summary — varies by step type), (b) set `status.conditions` to include `Started=True` and `Completed=True`, (c) run `oc create -f <result.json>` to create the CR (metadata + spec from template), (d) run `oc patch <resultCR> --type=merge --subresource=status -p '<status-json>'` to set the status, (e) exit 0.
-
-B5. **Output — agent failure path.** When the agent returns `success=false` or throws an exception during execution, the sandbox MUST still create the Result CR: set `status.failureReason` with the error message, set `status.conditions` to include `Completed=True`, and create+patch via `oc` as in rule B4. Exit 0 (the sandbox succeeded; the agent failed).
-
-B6. **Output — sandbox failure path.** When the sandbox cannot read input files, `oc create` fails, or any other infrastructure error occurs, the sandbox MUST write a human-readable error message to `/dev/termination-log` (max 4096 bytes) and exit non-zero. The operator reads the termination message from `pod.status.containerStatuses[0].state.terminated.message`.
-
-B7. **Context formatting.** The batch entrypoint MUST apply the same context prefix formatting as the current HTTP handler (rules 12–16 above): prepend targetNamespaces, attempt info, previousAttempts, and approvedOption blocks to the query text before sending to the provider.
-
-B8. **Provider selection and configuration.** Provider selection (`LIGHTSPEED_PROVIDER`, `LIGHTSPEED_MODEL`, etc.), credential loading, skills directory, MCP servers, and reasoning config are unchanged — all configured via environment variables and volume mounts on the pod spec, not via the input ConfigMap.
-
-B9. **RBAC requirements.** The sandbox ServiceAccount MUST have `create` and `patch` (with `status` subresource) permissions on `AnalysisResult`, `ExecutionResult`, `VerificationResult`, and `EscalationResult` resources in the AgenticRun namespace. `oc` authenticates using the auto-mounted SA token.
-
-### What Changes vs HTTP
-
-| Component | HTTP (current) | Batch (OLS-3066) |
-|---|---|---|
-| FastAPI server, routes, probes | Required | **Removed** |
-| LLM provider adapters | Unchanged | Unchanged |
-| Structured output / schema | Unchanged | Unchanged |
-| Tool execution (kubectl, oc) | Unchanged | Unchanged |
-| Skills, MCP servers | Unchanged | Unchanged |
-| Input source | HTTP request body | `/input/` ConfigMap mount |
-| Output destination | HTTP response body | Result CR via `oc create` + `oc patch --subresource=status` |
-| Error reporting | HTTP response with `success=false` | Result CR with `failureReason` (agent errors) or `/dev/termination-log` (sandbox errors) |
-| Dependencies added | — | Zero — `oc` is already in the image |
+Legacy HTTP BDD ([sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature), etc.) and evals HTTP clients are **out of date** with the batch entrypoint.

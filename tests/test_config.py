@@ -57,7 +57,6 @@ def test_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     sdk = resolve_sdk()
 
     assert sdk.name == "deepagents"
-    assert sdk.probe_url == "https://api.anthropic.com/"
     assert os.environ["ANTHROPIC_MODEL"] == "claude-sonnet-4-20250514"
 
 
@@ -90,7 +89,6 @@ def test_vertex_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == (
         "/var/run/secrets/llm-credentials/GOOGLE_APPLICATION_CREDENTIALS"
     )
-    assert sdk.probe_url == "https://us-east5-aiplatform.googleapis.com/"
 
 
 def test_vertex_google(monkeypatch: pytest.MonkeyPatch) -> None:

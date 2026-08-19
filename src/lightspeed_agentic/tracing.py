@@ -12,8 +12,8 @@ dual-shipped the same way.
 
 Templog (lightspeed-otel-collector postgresexporter) reads log **record**
 attributes, so bridged logs stamp ``agenticrun.uid`` / ``agenticrun.phase`` /
-``event`` via ``logging`` ``extra`` (from ``LIGHTSPEED_AGENTICRUN_UID`` /
-``LIGHTSPEED_AGENTICRUN_STEP``).
+``event`` via ``logging`` ``extra``. Phase comes from ``result-template.kind``
+via ``init_tracer(agenticrun_phase=…)``; uid from env when set.
 """
 
 from __future__ import annotations
@@ -70,6 +70,13 @@ class _OtelState:
 
 
 _state = _OtelState()
+
+
+def otel_runtime_enabled() -> bool:
+    """Return True when stdout audit or OTLP export should be configured."""
+    audit = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    return audit or bool(endpoint)
 
 
 class OTLPJsonStdoutExporter(SpanExporter):
@@ -168,8 +175,16 @@ def _span_context_for_logs(span: ReadableSpan) -> Context:
     )
 
 
-def init_tracer() -> None:
+def init_tracer(
+    *,
+    agenticrun_uid: str | None = None,
+    agenticrun_phase: str | None = None,
+) -> None:
     """Initialize OTEL TracerProvider and LoggerProvider from env.
+
+    ``agenticrun_phase`` should be the workflow step from ``result-template.kind``
+    (analysis, execution, verification, escalation). ``agenticrun_uid`` defaults
+    to ``LIGHTSPEED_AGENTICRUN_UID`` when omitted.
 
     Traces:
     - Stdout OTLP-JSON exporter when ``LIGHTSPEED_AUDIT_ENABLED=true``.
@@ -193,8 +208,10 @@ def init_tracer() -> None:
         protocol = "grpc"
 
     resource = Resource.create().merge(Resource({SERVICE_NAME: _DEFAULT_SERVICE_NAME}))
-    agenticrun_uid = os.environ.get("LIGHTSPEED_AGENTICRUN_UID", "").strip()
-    agenticrun_phase = os.environ.get("LIGHTSPEED_AGENTICRUN_STEP", "").strip()
+    if agenticrun_uid is None:
+        agenticrun_uid = os.environ.get("LIGHTSPEED_AGENTICRUN_UID", "").strip()
+    if agenticrun_phase is None:
+        agenticrun_phase = os.environ.get("LIGHTSPEED_AGENTICRUN_STEP", "").strip()
     audit = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
 
     if endpoint and audit:

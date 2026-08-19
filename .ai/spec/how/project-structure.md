@@ -7,21 +7,24 @@ Do not maintain a duplicate path inventory here.
 
 | Entry point | How invoked |
 |---|---|
-| `lightspeed_agentic.app:app` | Uvicorn ASGI target (`uvicorn lightspeed_agentic.app:app --host 0.0.0.0 --port 8080`) |
-| `config.resolve_sdk()` | Called once at startup in `app.py` before provider construction |
-| `create_provider(sdk.name)` | Called once at module load in `app.py` with SDK name from `resolve_sdk()` |
-| `build_router(provider, ...)` | Called once at module load in `app.py`, mounted at `/v1/agent` |
-| `register_metrics_route(app)` | Registers `GET /metrics` on the FastAPI app |
-| Lifespan `init_tracer` / `shutdown_tracer` | OTel TracerProvider setup/teardown in `app.py` |
+| `lightspeed_agentic.batch` | Container CMD: `python -m lightspeed_agentic.batch` |
+| `batch.main()` | Read `/input/`, run agent, publish Result CR, exit |
+| `config.resolve_sdk()` | Called at start of each batch run before readiness checks and provider construction |
+| `run_readiness_checks()` | R1 credential env (+ file paths) before LLM (`readiness.py`) |
+| `create_provider(sdk.name)` | Factory lazy-imports the selected adapter |
+| `run_agent_query()` | Shared agent execution (`run_agent.py`) |
+| `publish_agent_result()` | Result CR create + status via Kubernetes API |
+| `init_tracer` / `shutdown_tracer` | OTel TracerProvider setup/teardown in `batch.main()` |
 
 ## Naming Conventions
 
 - **Package:** `lightspeed_agentic` under `src/` (hatchling src-layout).
 - **Provider modules:** one file per provider in `providers/`, named after the SDK (`deepagents.py`, `gemini.py`, `openai.py`). Each exports a single `XProvider` class.
-- **Route modules:** `routes/` contains `models.py` (Pydantic shapes), `query.py` (endpoint registration), `__init__.py` (router builder).
-- **Observability modules:** `audit.py` (span events), `metrics.py` (`/metrics`), `tracing.py` (TracerProvider + traceparent).
-- **Config / MCP:** `config.py` maps `LIGHTSPEED_*` → SDK env; `mcp.py` parses `LIGHTSPEED_MCP_SERVERS`.
-- **Test layout:** `tests/` mirrors source structure. `tests/e2e/` holds BDD feature files and step definitions. `evals/` is a separate integration test suite run in containers.
+- **Batch / agent:** `batch.py` (entrypoint + input reading), `run_agent.py` (provider query loop).
+- **Publish results:** `publish_results/publish.py`, `publish_results/status.py`.
+- **Observability modules:** `audit.py` (span events), `metrics.py` (histograms), `tracing.py` (TracerProvider + traceparent parsing).
+- **Config / MCP / readiness:** `config.py` maps `LIGHTSPEED_*` → SDK env; `mcp.py` parses `LIGHTSPEED_MCP_SERVERS`; `readiness.py` runs `run_readiness_checks()` at batch startup (see `health-probes.md`).
+- **Test layout:** `tests/` mirrors source. `tests/e2e/` holds BDD feature files (HTTP-based — pending batch migration). `evals/` is a separate HTTP integration suite.
 
 ## Dependency Organization
 
@@ -37,4 +40,6 @@ The project uses optional extras to gate provider SDKs:
 | `eval` | Eval-specific test dependencies |
 | `e2e` | BDD test dependencies |
 
-Provider SDK imports are always lazy (inside methods or guarded by the factory match) so the base package imports cleanly without any extras installed.
+Runtime dependencies include `kubernetes` (Result CR publishing) and `prometheus-client` (metrics histograms). FastAPI and Uvicorn are **not** runtime dependencies.
+
+Provider SDK imports are always lazy (inside methods or guarded by the factory) so the base package imports cleanly without any extras installed.

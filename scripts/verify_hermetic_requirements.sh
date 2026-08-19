@@ -10,12 +10,8 @@ WHEEL_PYPI_HASH_FILE=".konflux/requirements.hashes.wheel.pypi.txt"
 # Packages in uv.lock runtime that are legitimately absent from hash files.
 # Keep this list minimal — a growing allowlist is a red flag.
 EXPECTED_MISSING=(
-    # Platform-specific (not built for linux)
-    colorama
+    # Windows-only — no linux wheels; omitted from Konflux prefetch hash files
     pywin32
-    tzdata
-    # Not yet in hash files — add via make konflux-requirements
-    grpcio-status
 )
 
 log() { echo "==> $*"; }
@@ -62,7 +58,11 @@ PYPI_PINNED=$({ cat "$SOURCE_HASH_FILE"; cat "$WHEEL_PYPI_HASH_FILE"; } | normal
 RHOAI_PINNED=$(cat "$WHEEL_HASH_FILE" | normalize_pinned)
 
 # --- Build allowlist set ---
-ALLOW_SET=$(printf '%s\n' "${EXPECTED_MISSING[@]}" | normalize_names)
+if (( ${#EXPECTED_MISSING[@]} )); then
+    ALLOW_SET=$(printf '%s\n' "${EXPECTED_MISSING[@]}" | normalize_names)
+else
+    ALLOW_SET=""
+fi
 ALLOW_COUNT=$(echo "$ALLOW_SET" | grep -c . || true)
 
 # --- Compute missing = (uv_pkgs - hash_pkgs - allowlist) ---

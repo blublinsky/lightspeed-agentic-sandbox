@@ -10,13 +10,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
-    "fastapi>=0.136.1",
-    "uvicorn>=0.34.0",
     "opentelemetry-api>=1.33.0",
     "opentelemetry-sdk>=1.33.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.33.0",
     "opentelemetry-exporter-otlp-proto-http>=1.33.0",
     "prometheus-client>=0.22.0",
+    "kubernetes>=32.0.0",
 ]
 
 [project.optional-dependencies]
@@ -63,8 +62,6 @@ select = ["A", "ARG", "ASYNC", "B", "E", "F", "I", "N", "PT", "RUF", "S", "SIM",
 "tests/**/*.py" = ["S101"]
 "tests/e2e/**/*.py" = ["S101", "I001", "F401"]
 "evals/**/*.py" = ["S101"]
-"src/lightspeed_agentic/routes/chat.py" = ["N815"]
-"src/lightspeed_agentic/routes/models.py" = ["N815"]
 "scripts/**/*.py" = ["S603", "S607"]
 
 [tool.mypy]

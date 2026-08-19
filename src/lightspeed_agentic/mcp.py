@@ -13,10 +13,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lightspeed_agentic.readiness import read_first_mounted_secret_in_dir, read_mounted_secret
+
 logger = logging.getLogger("lightspeed_agentic")
 
 SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"  # noqa: S105
 MCP_SECRET_MOUNT_ROOT = "/var/secrets/mcp"  # noqa: S105
+
+
+class MCPConfigError(ValueError):
+    """``LIGHTSPEED_MCP_SERVERS`` is set but not valid JSON array configuration."""
 
 
 @dataclass(frozen=True)
@@ -34,14 +40,18 @@ class ResolvedMCPServer:
 
 
 def _resolve_header(header: dict[str, str]) -> ResolvedMCPHeader | None:
-    """Resolve a single header entry based on its source type."""
+    """Resolve a single header entry based on its source type.
+
+    Returns ``None`` when the source is ``Client`` or resolution fails at
+    runtime (missing mount, empty secret dir). Structural header errors MUST
+    be raised by the caller before invoking this helper.
+    """
     name = header["name"]
     source = header["source"]
 
     if source == "ServiceAccountToken":
-        try:
-            token = Path(SA_TOKEN_PATH).read_text().strip()
-        except OSError:
+        token = read_mounted_secret(Path(SA_TOKEN_PATH))
+        if token is None:
             logger.warning("SA token not found at %s for header %s", SA_TOKEN_PATH, name)
             return None
         return ResolvedMCPHeader(name=name, value=f"Bearer {token}")
@@ -56,29 +66,77 @@ def _resolve_header(header: dict[str, str]) -> ResolvedMCPHeader | None:
         if not secret_name or not secret_dir.is_relative_to(root):
             logger.warning("Invalid secret path: %s for header %s", secret_dir, name)
             return None
-        if not secret_dir.is_dir():
-            logger.warning("Secret dir not found: %s for header %s", secret_dir, name)
-            return None
-        try:
-            files = sorted((f for f in secret_dir.iterdir() if f.is_file()), key=lambda f: f.name)
-        except OSError:
-            logger.warning("Cannot list secret dir %s for header %s", secret_dir, name)
-            return None
-        if not files:
-            logger.warning("No files in secret dir %s for header %s", secret_dir, name)
-            return None
-        try:
-            value = files[0].read_text().strip()
-        except OSError:
-            logger.warning("Cannot read secret file %s for header %s", files[0], name)
+        value = read_first_mounted_secret_in_dir(secret_dir)
+        if value is None:
+            logger.warning("Secret dir empty or unreadable: %s for header %s", secret_dir, name)
             return None
         return ResolvedMCPHeader(name=name, value=value)
 
     if source == "Client":
         return None
 
-    logger.warning("Unknown header source %r for header %s, skipping", source, name)
-    return None
+    raise MCPConfigError(
+        f"LIGHTSPEED_MCP_SERVERS header {name!r} has unsupported source {source!r}"
+    )
+
+
+def _parse_server_entry(entry: Any, index: int) -> ResolvedMCPServer:
+    """Parse one MCP server entry from ``LIGHTSPEED_MCP_SERVERS``."""
+    if not isinstance(entry, dict):
+        raise MCPConfigError(
+            f"LIGHTSPEED_MCP_SERVERS[{index}] must be a JSON object, got {type(entry).__name__}"
+        )
+
+    name = entry.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise MCPConfigError(f"LIGHTSPEED_MCP_SERVERS[{index}] missing or invalid name")
+
+    url = entry.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise MCPConfigError(f"LIGHTSPEED_MCP_SERVERS[{index}] missing or invalid url")
+
+    raw_headers = entry.get("headers")
+    if raw_headers is None:
+        raw_headers = []
+    elif not isinstance(raw_headers, list):
+        raise MCPConfigError(f"LIGHTSPEED_MCP_SERVERS[{index}] headers must be a JSON array")
+
+    resolved_headers: list[ResolvedMCPHeader] = []
+    for header_index, header in enumerate(raw_headers):
+        if not isinstance(header, dict):
+            raise MCPConfigError(
+                f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{header_index}] must be a JSON object"
+            )
+        if "name" not in header or "source" not in header:
+            raise MCPConfigError(
+                f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{header_index}] "
+                "must include name and source"
+            )
+        header_name = header["name"]
+        if not isinstance(header_name, str) or not header_name.strip():
+            raise MCPConfigError(
+                f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{header_index}] missing or invalid name"
+            )
+        header_source = header["source"]
+        if not isinstance(header_source, str) or not header_source.strip():
+            raise MCPConfigError(
+                f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{header_index}] missing or invalid source"
+            )
+        resolved = _resolve_header(header)
+        if resolved is not None:
+            resolved_headers.append(resolved)
+
+    timeout = entry.get("timeout", 60)
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        logger.warning("Invalid timeout in server %r, using default", name)
+        timeout = 60
+
+    return ResolvedMCPServer(
+        name=name,
+        url=url,
+        timeout=timeout,
+        headers=resolved_headers,
+    )
 
 
 def parse_mcp_servers() -> list[ResolvedMCPServer]:
@@ -89,45 +147,17 @@ def parse_mcp_servers() -> list[ResolvedMCPServer]:
 
     try:
         entries = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON in LIGHTSPEED_MCP_SERVERS")
-        return []
+    except json.JSONDecodeError as exc:
+        raise MCPConfigError(f"LIGHTSPEED_MCP_SERVERS contains invalid JSON: {exc}") from exc
 
     if not isinstance(entries, list):
-        logger.error("LIGHTSPEED_MCP_SERVERS must be a JSON array")
-        return []
+        raise MCPConfigError(
+            f"LIGHTSPEED_MCP_SERVERS must be a JSON array, got {type(entries).__name__}"
+        )
 
     servers: list[ResolvedMCPServer] = []
-    for entry in entries:
-        if not isinstance(entry, dict) or "name" not in entry or "url" not in entry:
-            logger.warning("Skipping invalid MCP server entry: %r", entry)
-            continue
-        resolved_headers: list[ResolvedMCPHeader] = []
-        raw_headers = entry.get("headers") or []
-        if not isinstance(raw_headers, list):
-            logger.warning("headers is not a list in server %r, skipping", entry["name"])
-            raw_headers = []
-        for h in raw_headers:
-            if not isinstance(h, dict) or "name" not in h or "source" not in h:
-                logger.warning("Skipping invalid header in server %r: %r", entry.get("name"), h)
-                continue
-            resolved = _resolve_header(h)
-            if resolved is not None:
-                resolved_headers.append(resolved)
-
-        timeout = entry.get("timeout", 60)
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
-            logger.warning("Invalid timeout in server %r, using default", entry["name"])
-            timeout = 60
-
-        servers.append(
-            ResolvedMCPServer(
-                name=entry["name"],
-                url=entry["url"],
-                timeout=timeout,
-                headers=resolved_headers,
-            )
-        )
+    for index, entry in enumerate(entries):
+        servers.append(_parse_server_entry(entry, index))
 
     if servers:
         logger.info("Resolved %d MCP server(s): %s", len(servers), [s.name for s in servers])
