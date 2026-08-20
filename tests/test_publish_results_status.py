@@ -192,6 +192,61 @@ class TestSanitizeAnalysisOptions:
         assert result[0]["diagnosis"]["rootCause"] == "cause"
         assert "remediationPlan" in result[0]
 
+    def test_filters_non_dict_options(self) -> None:
+        opts = [{"title": "t"}, "not-a-dict", 42, None]
+        result = _sanitize_analysis_options(opts)
+        assert len(result) == 1
+        assert result[0]["title"] == "t"
+
+    def test_removes_remediation_plan_when_diagnosis_missing(self) -> None:
+        opt = {
+            "title": "t",
+            "remediationPlan": {"description": "plan", "actions": []},
+        }
+        result = _sanitize_analysis_options([opt])
+        assert "remediationPlan" not in result[0]
+
+    def test_removes_remediation_plan_when_diagnosis_not_dict(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": "not-a-dict",
+            "remediationPlan": {"description": "plan", "actions": []},
+        }
+        result = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert "remediationPlan" not in result[0]
+
+    def test_null_actions_does_not_crash(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+            "remediationPlan": {"description": "p", "actions": None},
+        }
+        result = _sanitize_analysis_options([opt])
+        assert result[0]["remediationPlan"]["description"] == "p"
+
+    def test_null_steps_does_not_crash(self) -> None:
+        opt = {
+            "title": "t",
+            "verification": {"description": "v", "steps": None},
+        }
+        result = _sanitize_analysis_options([opt])
+        assert result[0]["verification"]["description"] == "v"
+
+    def test_invalid_diagnosis_still_sanitizes_verification(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "", "rootCause": "r"},
+            "verification": {"description": "x" * 5000},
+        }
+        result = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        from lightspeed_agentic.publish_results.status import (
+            _MAX_LEN_VERIFICATION_DESCRIPTION,
+        )
+
+        assert len(result[0]["verification"]["description"]) == _MAX_LEN_VERIFICATION_DESCRIPTION
+
     def test_build_status_calls_sanitize(self) -> None:
         agent = {
             "actionRequired": True,

@@ -166,6 +166,7 @@ def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, 
     2. **Oversized strings** — truncate fields to their CRD maxLength limits
        so the status-patch is not rejected.
     """
+    options[:] = [o for o in options if isinstance(o, dict)]
     for opt in options:
         # --- truncate top-level option fields ---
         if isinstance(opt.get("title"), str):
@@ -175,23 +176,26 @@ def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, 
 
         # --- diagnosis ---
         diag = opt.get("diagnosis")
+        diag_valid = False
         if isinstance(diag, dict):
             has_summary = isinstance(diag.get("summary"), str) and diag["summary"]
             has_root = isinstance(diag.get("rootCause"), str) and diag["rootCause"]
-            if not has_summary or not has_root:
-                logger.info("zeroing diagnosis with incomplete required fields")
-                del opt["diagnosis"]
-                opt.pop("remediationPlan", None)
-                continue
-            diag["summary"] = _truncate(diag["summary"], _MAX_LEN_DIAGNOSIS_SUMMARY)
-            diag["rootCause"] = _truncate(diag["rootCause"], _MAX_LEN_DIAGNOSIS_ROOT_CAUSE)
+            if has_summary and has_root:
+                diag["summary"] = _truncate(diag["summary"], _MAX_LEN_DIAGNOSIS_SUMMARY)
+                diag["rootCause"] = _truncate(
+                    diag["rootCause"], _MAX_LEN_DIAGNOSIS_ROOT_CAUSE
+                )
+                diag_valid = True
+        if not diag_valid:
+            opt.pop("diagnosis", None)
+            opt.pop("remediationPlan", None)
 
         # --- remediation plan ---
         plan = opt.get("remediationPlan")
         if isinstance(plan, dict):
             if isinstance(plan.get("description"), str):
                 plan["description"] = _truncate(plan["description"], _MAX_LEN_PLAN_DESCRIPTION)
-            for action in plan.get("actions", []):
+            for action in plan.get("actions") or []:
                 if not isinstance(action, dict):
                     continue
                 if isinstance(action.get("command"), str):
@@ -215,7 +219,7 @@ def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, 
             if isinstance(verif.get("description"), str):
                 max_len = _MAX_LEN_VERIFICATION_DESCRIPTION
                 verif["description"] = _truncate(verif["description"], max_len)
-            for step in verif.get("steps", []):
+            for step in verif.get("steps") or []:
                 if not isinstance(step, dict):
                     continue
                 if isinstance(step.get("name"), str):
@@ -232,7 +236,7 @@ def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, 
         rbac = opt.get("rbac")
         if isinstance(rbac, dict):
             for scope in ("namespaceScoped", "clusterScoped"):
-                for rule in rbac.get(scope, []):
+                for rule in rbac.get(scope) or []:
                     if not isinstance(rule, dict):
                         continue
                     if isinstance(rule.get("justification"), str):
