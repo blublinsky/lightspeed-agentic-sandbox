@@ -154,41 +154,49 @@ def _truncate(value: str, max_len: int) -> str:
     return value[:max_len]
 
 
-def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sanitize_analysis_options(
+    options: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Sanitize analysis options so they pass CRD validation.
 
-    Two fixes that ``_strip_empty_values`` cannot cover on its own:
-
-    1. **Partial diagnosis** — if either required field (summary, rootCause)
-       is empty or missing after stripping, the whole diagnosis (and its
-       paired remediationPlan per CRD CEL rules) must be removed to avoid a
-       CRD validation error.
-    2. **Oversized strings** — truncate fields to their CRD maxLength limits
-       so the status-patch is not rejected.
+    Returns ``(options, errors)`` where *errors* lists structural problems
+    (pairing violations, incomplete diagnosis) that must cause the step to
+    fail.  Oversized-string truncation is silent salvage; structural
+    incompleteness is not.
     """
+    errors: list[str] = []
     options[:] = [o for o in options if isinstance(o, dict)]
-    for opt in options:
+    for idx, opt in enumerate(options):
         # --- truncate top-level option fields ---
         if isinstance(opt.get("title"), str):
             opt["title"] = _truncate(opt["title"], _MAX_LEN_OPTION_TITLE)
         if isinstance(opt.get("summary"), str):
             opt["summary"] = _truncate(opt["summary"], _MAX_LEN_OPTION_SUMMARY)
 
-        # --- diagnosis ---
+        # --- diagnosis / remediationPlan pairing ---
         diag = opt.get("diagnosis")
+        has_diag = isinstance(diag, dict)
+        has_plan = "remediationPlan" in opt
         diag_valid = False
-        if isinstance(diag, dict):
+        if has_diag:
             has_summary = isinstance(diag.get("summary"), str) and diag["summary"]
             has_root = isinstance(diag.get("rootCause"), str) and diag["rootCause"]
             if has_summary and has_root:
                 diag["summary"] = _truncate(diag["summary"], _MAX_LEN_DIAGNOSIS_SUMMARY)
-                diag["rootCause"] = _truncate(
-                    diag["rootCause"], _MAX_LEN_DIAGNOSIS_ROOT_CAUSE
-                )
+                diag["rootCause"] = _truncate(diag["rootCause"], _MAX_LEN_DIAGNOSIS_ROOT_CAUSE)
                 diag_valid = True
-        if not diag_valid:
+            else:
+                errors.append(f"option {idx}: incomplete diagnosis")
+                opt.pop("diagnosis", None)
+                opt.pop("remediationPlan", None)
+        elif has_plan:
+            errors.append(f"option {idx}: remediationPlan without diagnosis")
             opt.pop("diagnosis", None)
             opt.pop("remediationPlan", None)
+
+        if diag_valid and not has_plan:
+            errors.append(f"option {idx}: diagnosis without remediationPlan")
+            opt.pop("diagnosis", None)
 
         # --- remediation plan ---
         plan = opt.get("remediationPlan")
@@ -241,11 +249,9 @@ def _sanitize_analysis_options(options: list[dict[str, Any]]) -> list[dict[str, 
                         continue
                     if isinstance(rule.get("justification"), str):
                         max_len = _MAX_LEN_RBAC_JUSTIFICATION
-                        rule["justification"] = _truncate(
-                            rule["justification"], max_len
-                        )
+                        rule["justification"] = _truncate(rule["justification"], max_len)
 
-    return options
+    return options, errors
 
 
 def build_status(
@@ -290,7 +296,12 @@ def build_status(
         status[key] = value
 
     if kind == "AnalysisResult" and isinstance(status.get("options"), list):
-        status["options"] = _sanitize_analysis_options(status["options"])
+        status["options"], sanitize_errors = _sanitize_analysis_options(status["options"])
+        if sanitize_errors:
+            reason = "; ".join(sanitize_errors)
+            logger.warning("analysis option pairing violations: %s", reason)
+            status["failureReason"] = reason
+            succeeded = False
 
     _strip_empty_values(status)
 
