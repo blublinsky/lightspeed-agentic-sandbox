@@ -10,6 +10,7 @@ from lightspeed_agentic.types import (
     ThinkingDeltaEvent,
     ToolCallEvent,
     ToolResultEvent,
+    stringify,
 )
 
 
@@ -53,6 +54,26 @@ def test_events_are_frozen():
     e = TextDeltaEvent(text="hello")
     with pytest.raises(AttributeError):
         e.text = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, ""),
+        ("", ""),
+        ("hello", "hello"),
+        (0, "0"),
+        (False, "false"),
+        ([], "[]"),
+        ({}, "{}"),
+        (1, "1"),
+        (True, "true"),
+        ({"a": 1}, '{"a": 1}'),
+        ([0], "[0]"),
+    ],
+)
+def test_stringify(value, expected):
+    assert stringify(value) == expected
 
 
 def test_query_options_defaults():

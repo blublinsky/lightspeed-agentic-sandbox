@@ -17,7 +17,7 @@ def stringify(value: Any) -> str:
         return value
     if hasattr(value, "model_dump"):
         return json.dumps(value.model_dump(exclude_none=True))
-    return json.dumps(value) if value else ""
+    return json.dumps(value) if value is not None else ""
 
 
 @dataclass(frozen=True)
