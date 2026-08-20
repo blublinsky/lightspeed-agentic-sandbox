@@ -175,10 +175,9 @@ def _sanitize_analysis_options(
 
         # --- diagnosis / remediationPlan pairing ---
         diag = opt.get("diagnosis")
-        has_diag = isinstance(diag, dict)
         has_plan = "remediationPlan" in opt
         diag_valid = False
-        if has_diag:
+        if isinstance(diag, dict):
             has_summary = isinstance(diag.get("summary"), str) and diag["summary"]
             has_root = isinstance(diag.get("rootCause"), str) and diag["rootCause"]
             if has_summary and has_root:
