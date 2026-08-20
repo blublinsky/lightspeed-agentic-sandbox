@@ -7,8 +7,14 @@ from datetime import UTC, datetime
 import pytest
 
 from lightspeed_agentic.publish_results.status import (
+    _MAX_LEN_DIAGNOSIS_ROOT_CAUSE,
+    _MAX_LEN_DIAGNOSIS_SUMMARY,
+    _MAX_LEN_OPTION_SUMMARY,
+    _MAX_LEN_OPTION_TITLE,
+    _MAX_LEN_PLAN_DESCRIPTION,
     ACTION_REQUIRED_FALSE,
     ACTION_REQUIRED_TRUE,
+    _sanitize_analysis_options,
     build_conditions,
     build_status,
     format_condition_time,
@@ -104,6 +110,193 @@ class TestBuildStatusEscalation:
         status = build_status("EscalationResult", agent, started_at=_dt(), completed_at=_dt())
         assert status["summary"] == "esc"
         assert status["content"] == "details"
+
+
+class TestSanitizeAnalysisOptions:
+    def test_truncates_option_title(self) -> None:
+        opt = {
+            "title": "x" * 300,
+            "summary": "s",
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+            "remediationPlan": {"description": "p"},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert len(result[0]["title"]) == _MAX_LEN_OPTION_TITLE
+        assert not errors
+
+    def test_truncates_option_summary(self) -> None:
+        opt = {
+            "title": "t",
+            "summary": "x" * 2000,
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+            "remediationPlan": {"description": "p"},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert len(result[0]["summary"]) == _MAX_LEN_OPTION_SUMMARY
+        assert not errors
+
+    def test_truncates_diagnosis_fields(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {
+                "summary": "x" * 10000,
+                "rootCause": "y" * 2000,
+            },
+            "remediationPlan": {"description": "p"},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert len(result[0]["diagnosis"]["summary"]) == _MAX_LEN_DIAGNOSIS_SUMMARY
+        assert len(result[0]["diagnosis"]["rootCause"]) == _MAX_LEN_DIAGNOSIS_ROOT_CAUSE
+        assert not errors
+
+    def test_truncates_plan_description(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+            "remediationPlan": {
+                "description": "x" * 10000,
+                "actions": [{"type": "t", "description": "d"}],
+            },
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert len(result[0]["remediationPlan"]["description"]) == _MAX_LEN_PLAN_DESCRIPTION
+        assert not errors
+
+    def test_incomplete_diagnosis_returns_error(self) -> None:
+        actions = [{"type": "t", "description": "d"}]
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "", "rootCause": "cause"},
+            "remediationPlan": {"description": "plan", "actions": actions},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert "remediationPlan" not in result[0]
+        assert len(errors) == 1
+        assert "incomplete diagnosis" in errors[0]
+
+    def test_incomplete_root_cause_returns_error(self) -> None:
+        actions = [{"type": "t", "description": "d"}]
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "diag", "rootCause": ""},
+            "remediationPlan": {"description": "plan", "actions": actions},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert "remediationPlan" not in result[0]
+        assert len(errors) == 1
+
+    def test_missing_summary_returns_error(self) -> None:
+        actions = [{"type": "t", "description": "d"}]
+        opt = {
+            "title": "t",
+            "diagnosis": {"rootCause": "cause"},
+            "remediationPlan": {"description": "plan", "actions": actions},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert "remediationPlan" not in result[0]
+        assert len(errors) == 1
+
+    def test_keeps_valid_paired_diagnosis(self) -> None:
+        actions = [{"type": "t", "description": "d"}]
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "diag", "rootCause": "cause"},
+            "remediationPlan": {"description": "plan", "actions": actions},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert result[0]["diagnosis"]["summary"] == "diag"
+        assert result[0]["diagnosis"]["rootCause"] == "cause"
+        assert "remediationPlan" in result[0]
+        assert not errors
+
+    def test_filters_non_dict_options(self) -> None:
+        opts = [{"title": "t"}, "not-a-dict", 42, None]
+        result, _errors = _sanitize_analysis_options(opts)
+        assert len(result) == 1
+        assert result[0]["title"] == "t"
+
+    def test_plan_without_diagnosis_returns_error(self) -> None:
+        opt = {
+            "title": "t",
+            "remediationPlan": {"description": "plan", "actions": []},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "remediationPlan" not in result[0]
+        assert len(errors) == 1
+        assert "without diagnosis" in errors[0]
+
+    def test_plan_with_non_dict_diagnosis_returns_error(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": "not-a-dict",
+            "remediationPlan": {"description": "plan", "actions": []},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert "remediationPlan" not in result[0]
+        assert len(errors) == 1
+
+    def test_diagnosis_without_plan_returns_error(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert len(errors) == 1
+        assert "without remediationPlan" in errors[0]
+
+    def test_null_actions_does_not_crash(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "d", "rootCause": "r"},
+            "remediationPlan": {"description": "p", "actions": None},
+        }
+        result, _errors = _sanitize_analysis_options([opt])
+        assert result[0]["remediationPlan"]["description"] == "p"
+
+    def test_null_steps_does_not_crash(self) -> None:
+        opt = {
+            "title": "t",
+            "verification": {"description": "v", "steps": None},
+        }
+        result, _errors = _sanitize_analysis_options([opt])
+        assert result[0]["verification"]["description"] == "v"
+
+    def test_invalid_diagnosis_still_sanitizes_verification(self) -> None:
+        opt = {
+            "title": "t",
+            "diagnosis": {"summary": "", "rootCause": "r"},
+            "verification": {"description": "x" * 5000},
+        }
+        result, errors = _sanitize_analysis_options([opt])
+        assert "diagnosis" not in result[0]
+        assert errors
+        from lightspeed_agentic.publish_results.status import (
+            _MAX_LEN_VERIFICATION_DESCRIPTION,
+        )
+
+        assert len(result[0]["verification"]["description"]) == _MAX_LEN_VERIFICATION_DESCRIPTION
+
+    def test_build_status_fails_on_pairing_violation(self) -> None:
+        agent = {
+            "actionRequired": True,
+            "options": [
+                {
+                    "title": "x" * 300,
+                    "diagnosis": {"summary": "", "rootCause": "r"},
+                },
+            ],
+        }
+        status = build_status("AnalysisResult", agent, started_at=_dt(), completed_at=_dt())
+        assert len(status["options"][0]["title"]) == _MAX_LEN_OPTION_TITLE
+        assert "diagnosis" not in status["options"][0]
+        assert "failureReason" in status
+        completed = next(c for c in status["conditions"] if c["type"] == "Completed")
+        assert completed["reason"] == "Failed"
 
 
 class TestBuildStatusFailureReason:
