@@ -118,6 +118,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 - Unit: `tests/test_tracing.py` — shared Resource, span-event → OTLP log forwarding (record attrs; audit gate; unresolved AgenticRun env warning), LoggingHandler dual-ship when endpoint set
 - Unit: `tests/test_audit.py` — AuditLogger span/event emission (unchanged call sites)
 - Unit: `tests/test_metrics.py` — in-process histogram recording (no export path in batch)
+- Live (batch cluster): `tests/e2e/features/sandbox_e2e.feature` scenario **Batch run exports traces and audit logs to OTEL** — minimal batch Job with audit enabled; asserts the e2e OTEL collector debug exporter received spans and bridged audit log records carrying `agenticrun.uid` / `agenticrun.phase` for the run (requires `scripts/e2e-install-fixtures.sh`, `E2E_BATCH_VERIFY_FIXTURES=1`)
 
 ### MCP Semantic Conventions [UNTRACKED]
 

@@ -1,4 +1,4 @@
-"""Then steps — HTTP and JSON assertions."""
+"""Then steps — batch run and JSON assertions."""
 
 from __future__ import annotations
 
@@ -7,70 +7,86 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+from kubernetes.client import CoreV1Api  # type: ignore[import-untyped]
 from pytest_bdd import then
 
-from tests.e2e.runner import RunHttpResult
+from tests.e2e.otel_verify import wait_for_otel_audit_logs, wait_for_otel_traces
+from tests.e2e.run_result import E2ERunResult
+from tests.e2e.skills_fixtures import E2E_TOKEN_REL_PATH
+from tests.e2e.suite_setup import BatchE2EConfig
 
 # SHA-256 of empty string — models sometimes fabricate this instead of running echo-token.sh
 _EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-@then("the response body status is ok")
-def assert_body_status_ok(bdd_context: dict[str, Any]) -> None:
-    """Assert probe JSON body has ``status: ok``."""
-    body = bdd_context["response_body"]
-    assert body.get("status") == "ok", body
+def _require_run_result(bdd_context: dict[str, Any]) -> E2ERunResult:
+    result = bdd_context.get("run_result")
+    if not isinstance(result, E2ERunResult):
+        msg = "run_result missing from BDD context — When step did not store a batch run result"
+        raise AssertionError(msg)
+    return result
 
 
-@then("the HTTP response status code is 200")
-def assert_status_200(bdd_context: dict[str, Any]) -> None:
-    """Assert HTTP 200 with no transport error."""
-    res: RunHttpResult = bdd_context["http_result"]
-    assert res.error is None, f"transport error: {res.error}"
-    assert res.status_code == 200, f"expected 200, got {res.status_code}: {res.raw_text[:500]}"
+def _assert_batch_job_completes(res: E2ERunResult) -> None:
+    assert res.error is None, f"batch harness error: {res.error}"
+    assert res.batch is not None, "batch run result missing Job metadata"
+    assert res.batch.job_succeeded, (
+        f"batch Job did not succeed: {res.batch.termination_message or res.raw_text[:500]}"
+    )
 
 
-@then("the response body contains gen_ai histogram metrics")
-def assert_gen_ai_histograms(bdd_context: dict[str, Any]) -> None:
-    raw = bdd_context["http_result"].raw_text
-    for name in (
-        "gen_ai_client_token_usage",
-        "gen_ai_client_operation_duration_seconds",
-        "gen_ai_execute_tool_duration_seconds",
-    ):
-        assert name in raw, f"metric {name!r} not found in /metrics output"
+@then("the batch job completes")
+def assert_batch_job_completes(bdd_context: dict[str, Any]) -> None:
+    """Assert the batch Job finished without a harness error."""
+    _assert_batch_job_completes(_require_run_result(bdd_context))
 
 
-def _histogram_count(raw: str, metric: str) -> float:
-    """Sum the ``<metric>_count`` samples across all label sets in Prometheus text."""
-    total = 0.0
-    prefix = f"{metric}_count"
-    for line in raw.splitlines():
-        if line.startswith("#") or not line.startswith(prefix):
-            continue
-        # Format: gen_ai_..._count{labels} <value>   (or without the {labels} block)
-        char_after = line[len(prefix) : len(prefix) + 1]
-        if char_after not in ("{", " "):
-            continue
-        total += float(line.rsplit(" ", 1)[1])
-    return total
+@then("the run completes successfully")
+def assert_run_completes_successfully(bdd_context: dict[str, Any]) -> None:
+    """Assert the batch Job completed and the agent reported success."""
+    res = _require_run_result(bdd_context)
+    _assert_batch_job_completes(res)
+    assert res.batch is not None
+    assert res.batch.agent_succeeded, (
+        "agent did not succeed: "
+        f"{res.body.get('summary') or res.body.get('failureReason') or res.body!r}"
+    )
 
 
-@then("the gen_ai token and duration metrics have recorded samples")
-def assert_gen_ai_metrics_recorded(bdd_context: dict[str, Any]) -> None:
-    """Assert the histograms actually observed data, not just that they are registered.
+def _require_run_uid(bdd_context: dict[str, Any]) -> str:
+    run_uid = bdd_context.get("run_uid", "")
+    if not run_uid:
+        msg = "run_uid missing from BDD context — batch When step did not store a run result"
+        raise AssertionError(msg)
+    return str(run_uid)
 
-    Only ``token_usage`` and ``operation_duration`` are recorded by the run
-    endpoint; ``execute_tool_duration`` is registered but never observed, so it is
-    intentionally excluded here.
-    """
-    raw = bdd_context["http_result"].raw_text
-    for metric in (
-        "gen_ai_client_token_usage",
-        "gen_ai_client_operation_duration_seconds",
-    ):
-        count = _histogram_count(raw, metric)
-        assert count > 0, f"metric {metric!r} has no recorded samples (count={count})"
+
+@then("the OTEL collector received traces for the batch run")
+def assert_otel_traces_received(
+    bdd_context: dict[str, Any],
+    batch_e2e_config: BatchE2EConfig,
+    k8s_core_client: CoreV1Api,
+) -> None:
+    """Assert the e2e OTEL collector debug output includes spans for this batch run."""
+    run_uid = _require_run_uid(bdd_context)
+    wait_for_otel_traces(k8s_core_client, batch_e2e_config.namespace, run_uid)
+
+
+@then("the OTEL collector received audit logs with agenticrun attributes")
+def assert_otel_audit_logs_received(
+    bdd_context: dict[str, Any],
+    batch_e2e_config: BatchE2EConfig,
+    k8s_core_client: CoreV1Api,
+) -> None:
+    """Assert bridged audit OTLP logs include agenticrun uid/phase for this batch run."""
+    run_uid = _require_run_uid(bdd_context)
+    phase = str(bdd_context.get("run_step", "analysis"))
+    wait_for_otel_audit_logs(
+        k8s_core_client,
+        batch_e2e_config.namespace,
+        run_uid,
+        phase=phase,
+    )
 
 
 @then("the response includes success summary and ticketId fields")
@@ -191,15 +207,26 @@ def assert_approved_option_matches_context(bdd_context: dict[str, Any]) -> None:
 
 
 @then("the skill script wrote a token file to disk")
-def assert_token_file(e2e_output_dir: Path | None, bdd_context: dict[str, Any]) -> None:
-    """Assert the echo-token skill wrote ``.e2e_token`` under E2E_OUTPUT_DIR."""
-    assert e2e_output_dir is not None, "E2E_OUTPUT_DIR not set"
-    token_path = e2e_output_dir / ".e2e_token"
-    assert token_path.exists(), (
-        f"token file not found at {token_path}; "
-        "the agent must run bash scripts/echo-token.sh from the skill directory"
-    )
-    token = token_path.read_text().strip()
+def assert_token_file(
+    bdd_context: dict[str, Any],
+    e2e_output_dir: Path | None,
+) -> None:
+    """Assert echo-token.sh ran (token recovered from batch pod logs or host output dir)."""
+    token = str(bdd_context.get("token_file", "")).strip()
+    if not token:
+        if bdd_context.get("batch_job_name"):
+            msg = (
+                "echo-token script output not found in batch pod logs; "
+                "the agent must run bash scripts/echo-token.sh from the skill directory"
+            )
+            raise AssertionError(msg)
+        assert e2e_output_dir is not None, "E2E_OUTPUT_DIR not set"
+        host_path = e2e_output_dir / E2E_TOKEN_REL_PATH
+        assert host_path.exists(), (
+            f"token file not found at {host_path}; "
+            "the agent must run bash scripts/echo-token.sh from the skill directory"
+        )
+        token = host_path.read_text(encoding="utf-8").strip()
     assert token, "token file is empty"
     bdd_context["token"] = token
 
@@ -216,12 +243,11 @@ def assert_token_in_response(bdd_context: dict[str, Any]) -> None:
     )
 
 
-@then("the HTTP response status code is 200 and the envelope has success and summary")
-def assert_200_envelope(bdd_context: dict[str, Any]) -> None:
-    """Assert HTTP 200 and RunResponse envelope fields without schema validation."""
-    res: RunHttpResult = bdd_context["http_result"]
-    assert res.error is None, f"transport error: {res.error}"
-    assert res.status_code == 200, f"expected 200, got {res.status_code}: {res.raw_text[:500]}"
+@then("the run completes successfully and the envelope has success and summary")
+def assert_run_envelope(bdd_context: dict[str, Any]) -> None:
+    """Assert successful batch run and response envelope fields without schema validation."""
+    res = _require_run_result(bdd_context)
+    _assert_batch_job_completes(res)
     body = bdd_context["response_body"]
     assert "success" in body, body
     assert "summary" in body, body
@@ -248,3 +274,28 @@ def assert_summary_contains_namespace_output(bdd_context: dict[str, Any]) -> Non
         f"summary does not contain sentinel namespace {_MOCK_SENTINEL_NAMESPACE!r} "
         f"(tool was likely not invoked): {summary!r}"
     )
+
+
+_SHELL_FAILURE_MARKERS = (
+    "exit code 127",
+    "command not found",
+    "local environment",
+)
+
+
+@then("the response summary indicates an MCP tool failure")
+def assert_summary_indicates_mcp_tool_failure(bdd_context: dict[str, Any]) -> None:
+    """Assert failure came from mock-ocp-mcp, not a local shell workaround."""
+    body = bdd_context["response_body"]
+    summary = str(body.get("summary", ""))
+    lowered = summary.lower()
+    assert "mock-ocp-mcp" in lowered, (
+        f"summary does not reference mock-ocp-mcp (MCP path likely not used): {body!r}"
+    )
+    assert "nonexistent_tool_xyz_999" in lowered, (
+        f"summary does not mention the requested MCP tool name: {body!r}"
+    )
+    for marker in _SHELL_FAILURE_MARKERS:
+        assert marker not in lowered, (
+            f"summary looks like a local shell failure ({marker!r}), not MCP: {body!r}"
+        )

@@ -86,9 +86,9 @@ Use this table to navigate from component → spec → executable tests:
 |---|---|---|
 | [run-api.md](.ai/spec/what/run-api.md) | Batch entrypoint: input files, context prefix, timeouts, Result CR publishing | [test_batch.py](tests/test_batch.py), [test_batch_input.py](tests/test_batch_input.py), [test_run_agent.py](tests/test_run_agent.py), [test_publish_results_publish.py](tests/test_publish_results_publish.py), [test_publish_results_status.py](tests/test_publish_results_status.py) |
 | [health-probes.md](.ai/spec/what/health-probes.md) | Readiness checks at batch startup (R1) | [test_ready.py](tests/test_ready.py), [test_batch.py](tests/test_batch.py) (readiness fail-fast) |
-| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py); live: [skills.feature](tests/e2e/features/skills.feature); legacy HTTP: [structured_output.feature](tests/e2e/features/structured_output.feature) |
-| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_resolution.py](tests/test_model_resolution.py), [test_config.py](tests/test_config.py) |
-| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Container BDD harness, live vs unit split, run modes | Legacy HTTP BDD: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature); live: [skills.feature](tests/e2e/features/skills.feature) |
+| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py), [test_deepagents.py](tests/test_deepagents.py); live batch: [skills.feature](tests/e2e/features/skills.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
+| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_resolution.py](tests/test_model_resolution.py), [test_config.py](tests/test_config.py); live batch: [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
+| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Batch cluster BDD harness (OpenShift Jobs, Result CRs, fixtures) | Live batch: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature); helpers: [test_batch_e2e_helpers.py](tests/test_batch_e2e_helpers.py), [test_e2e_credentials.py](tests/test_e2e_credentials.py) |
 
 ## Quick Commands
 
@@ -97,6 +97,7 @@ make install                           # create/update .venv with dev dependenci
 make install-all                       # install all providers + dev + eval extras
 make lock                              # refresh uv.lock after dependency changes
 make test                              # unit tests only; mocked providers, no API calls
+make e2e openai-agents                 # live batch BDD on OpenShift (see e2e-testing.md)
 make lint                              # ruff check src/ tests/ evals/
 make format                            # ruff format + autofix
 make eval                              # build image and run live evals in containers
@@ -134,7 +135,7 @@ src/lightspeed_agentic/
 | --- | --- | --- | --- |
 | Tools | `LocalShellBackend` + MCP tools | Native `ExecuteBashTool` plus built-in web tools | Native `SandboxAgent` shell/filesystem/skills |
 | Skills | Skills dirs passed to `create_deep_agent()` | Native `SkillToolset` | Native `Skills` capability |
-| Structured output | `response_format` Pydantic model | Native response schema path | `output_type` wrapper |
+| Structured output | `ProviderStrategy` when thinking configured, else `ToolStrategy` via `response_format` | Native response schema path | `output_type` wrapper |
 | Streaming | `astream(stream_mode="messages")` | `StreamingMode.SSE` | `Runner.run_streamed()` |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
@@ -163,8 +164,10 @@ adapters or put path helpers in `tools.py`.
   Prefer exercising real batch/run_agent glue over deep mocking of SDK internals.
 - Unit tests cover `batch.py`, `run_agent.py`, and `readiness.py` with mocked
   providers and Kubernetes client — no live API calls.
-- `make eval` and `make eval-report` are integration-only checks. They still use
-  HTTP against live containers ([PLANNED: migrate to batch entrypoint]).
+- `make e2e` runs live batch BDD on an OpenShift cluster (`scripts/e2e-containers.sh`);
+  see [e2e-testing.md](.ai/spec/what/e2e-testing.md).
+- `make eval` and `make eval-report` are separate integration checks; they still use
+  HTTP against live containers.
 - See [`evals/README.md`](evals/README.md) for eval setup, credential handling,
   provider coverage, and report details.
 - Evals are container-only. If you change eval workspace fixtures, skills, or

@@ -16,8 +16,15 @@ import subprocess
 from dataclasses import dataclass, field
 
 PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS = "anthropic-vertex-deepagents"
+PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS = "anthropic-bedrock-deepagents"
 PROVIDER_GEMINI_VERTEX_ADK = "gemini-vertex-adk"
 PROVIDER_OPENAI_AGENTS = "openai-agents"
+
+# Konflux workspace secrets mount at /var/run/credentials/token (data key: token).
+KONFLUX_CREDENTIAL_MOUNT = "/var/run/credentials/token"
+KONFLUX_CREDENTIAL_DIR = "/var/run/credentials"
+GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV = "GOOGLE_PROVIDER_CREDENTIALS_PATH"
+OPENAI_PROVIDER_KEY_PATH_ENV = "OPENAI_PROVIDER_KEY_PATH"
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,98 @@ def _run_quiet(cmd: list[str], timeout: int = 10) -> tuple[bool, str]:
         return False, ""
 
 
+def _credential_file_path(*env_keys: str) -> str | None:
+    for key in env_keys:
+        path = os.environ.get(key, "").strip()
+        if path:
+            return path
+    if os.path.isfile(KONFLUX_CREDENTIAL_MOUNT):
+        return KONFLUX_CREDENTIAL_MOUNT
+    return None
+
+
+def _validate_plaintext_credential_file(path: str, label: str) -> tuple[bool, str]:
+    if not os.path.isfile(path):
+        return False, f"{label} file not found: {path}"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read().strip()
+    except OSError as exc:
+        return False, f"{label} unreadable ({path}): {exc}"
+    if not content:
+        return False, f"{label} file is empty: {path}"
+    return True, path
+
+
+def _validate_vertex_credential_file(path: str, label: str) -> tuple[bool, str, str]:
+    ok, detail = _validate_plaintext_credential_file(path, label)
+    if not ok:
+        return False, detail, ""
+    try:
+        import json
+
+        with open(path, encoding="utf-8") as handle:
+            data = json.loads(handle.read())
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"{label} is not valid Vertex JSON ({path}): {exc}", ""
+    project_id = data.get("project_id", "")
+    if not project_id:
+        return False, f"{label} missing project_id ({path})", ""
+    return True, path, str(project_id)
+
+
+def _vertex_credential_status(
+    name: str,
+    *,
+    source_label: str,
+    path: str,
+    project_id: str,
+    anthropic: bool,
+) -> ProviderCredentialStatus:
+    env_vars: dict[str, str] = {
+        "GOOGLE_APPLICATION_CREDENTIALS": path,
+        GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV: path,
+    }
+    env_vars.update(_vertex_env_vars())
+    if anthropic:
+        env_vars["CLAUDE_CODE_USE_VERTEX"] = "1"
+        if not os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID"):
+            env_vars["ANTHROPIC_VERTEX_PROJECT_ID"] = project_id
+    else:
+        env_vars["GOOGLE_CLOUD_PROJECT"] = project_id
+    return ProviderCredentialStatus(
+        name,
+        True,
+        "env",
+        f"{source_label} ({path})",
+        env_vars=env_vars,
+    )
+
+
+def _check_vertex_credential_file(
+    name: str,
+    *,
+    anthropic: bool,
+) -> ProviderCredentialStatus | None:
+    path = _credential_file_path(
+        GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV,
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    )
+    if not path:
+        return None
+    label = GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV
+    ok, detail, project_id = _validate_vertex_credential_file(path, label)
+    if not ok:
+        return ProviderCredentialStatus(name, False, "none", detail)
+    return _vertex_credential_status(
+        name,
+        source_label=label,
+        path=path,
+        project_id=project_id,
+        anthropic=anthropic,
+    )
+
+
 def _check_anthropic_vertex_deepagents() -> ProviderCredentialStatus:
     name = PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -51,6 +150,10 @@ def _check_anthropic_vertex_deepagents() -> ProviderCredentialStatus:
             "env",
             "ANTHROPIC_API_KEY set",
         )
+
+    vertex_file = _check_vertex_credential_file(name, anthropic=True)
+    if vertex_file is not None:
+        return vertex_file
 
     if os.environ.get("CLAUDE_CODE_USE_VERTEX") == "1":
         gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
@@ -103,7 +206,63 @@ def _check_anthropic_vertex_deepagents() -> ProviderCredentialStatus:
         name,
         False,
         "none",
-        "ANTHROPIC_API_KEY not set (or set CLAUDE_CODE_USE_VERTEX=1 / CLAUDE_CODE_USE_BEDROCK=1)",
+        "ANTHROPIC_API_KEY not set (or set CLAUDE_CODE_USE_VERTEX=1 / "
+        f"CLAUDE_CODE_USE_BEDROCK=1 / {GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV})",
+    )
+
+
+def _read_bedrock_aws_env() -> dict[str, str] | None:
+    access = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    if access and secret:
+        return {"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
+
+    access_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_access_key_id")
+    secret_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_secret_access_key")
+    if os.path.isfile(access_path) and os.path.isfile(secret_path):
+        try:
+            with open(access_path, encoding="utf-8") as handle:
+                access = handle.read().strip()
+            with open(secret_path, encoding="utf-8") as handle:
+                secret = handle.read().strip()
+        except OSError:
+            return None
+        if access and secret:
+            return {"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
+    return None
+
+
+def _check_anthropic_bedrock_deepagents() -> ProviderCredentialStatus:
+    name = PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS
+    aws_env = _read_bedrock_aws_env()
+    if aws_env is None:
+        if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+            ok, _ = _run_quiet(["aws", "configure", "get", "aws_access_key_id"])
+            if ok:
+                return ProviderCredentialStatus(
+                    name,
+                    True,
+                    "aws_cli",
+                    "AWS credentials via aws configure",
+                    env_vars={"CLAUDE_CODE_USE_BEDROCK": "1"},
+                )
+        return ProviderCredentialStatus(
+            name,
+            False,
+            "none",
+            "AWS Bedrock credentials not found (set AWS_ACCESS_KEY_ID and "
+            "AWS_SECRET_ACCESS_KEY, or mount Konflux bedrock-apitoken)",
+        )
+
+    env_vars = {**aws_env, "CLAUDE_CODE_USE_BEDROCK": "1"}
+    if not os.environ.get("AWS_REGION"):
+        env_vars["AWS_REGION"] = os.environ.get("CLOUD_ML_REGION", "us-east-1")
+    return ProviderCredentialStatus(
+        name,
+        True,
+        "env",
+        "AWS Bedrock credentials (bedrock-apitoken or env)",
+        env_vars=env_vars,
     )
 
 
@@ -144,6 +303,10 @@ def _check_gemini_vertex_adk() -> ProviderCredentialStatus:
             env_vars={"GOOGLE_API_KEY": gemini_key},
         )
 
+    vertex_file = _check_vertex_credential_file(name, anthropic=False)
+    if vertex_file is not None:
+        return vertex_file
+
     # ADC file → Vertex AI mode (ADC is for GCP APIs, not the Gemini Developer API)
     gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
     if gac and os.path.isfile(gac):
@@ -170,7 +333,8 @@ def _check_gemini_vertex_adk() -> ProviderCredentialStatus:
         False,
         "none",
         "No Gemini credentials: set GOOGLE_API_KEY, GEMINI_API_KEY, "
-        "GOOGLE_APPLICATION_CREDENTIALS, or configure gcloud ADC",
+        f"{GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV}, GOOGLE_APPLICATION_CREDENTIALS, "
+        "or configure gcloud ADC",
     )
 
 
@@ -182,6 +346,23 @@ def _check_openai_agents() -> ProviderCredentialStatus:
             True,
             "env",
             "OPENAI_API_KEY set",
+        )
+
+    key_path = os.environ.get(OPENAI_PROVIDER_KEY_PATH_ENV, "")
+    if not key_path and os.path.isfile(KONFLUX_CREDENTIAL_MOUNT):
+        key_path = KONFLUX_CREDENTIAL_MOUNT
+    if key_path:
+        ok, detail = _validate_plaintext_credential_file(
+            key_path,
+            OPENAI_PROVIDER_KEY_PATH_ENV,
+        )
+        if not ok:
+            return ProviderCredentialStatus(name, False, "none", detail)
+        return ProviderCredentialStatus(
+            name,
+            True,
+            "env",
+            f"{OPENAI_PROVIDER_KEY_PATH_ENV} file ({key_path})",
         )
 
     if os.environ.get("OPENAI_BASE_URL"):
@@ -196,12 +377,14 @@ def _check_openai_agents() -> ProviderCredentialStatus:
         name,
         False,
         "none",
-        "OPENAI_API_KEY not set (or set OPENAI_BASE_URL for keyless endpoints)",
+        "OPENAI_API_KEY not set (or set OPENAI_BASE_URL for keyless endpoints, "
+        f"or {OPENAI_PROVIDER_KEY_PATH_ENV})",
     )
 
 
 _CHECKERS = {
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: _check_anthropic_vertex_deepagents,
+    PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: _check_anthropic_bedrock_deepagents,
     PROVIDER_GEMINI_VERTEX_ADK: _check_gemini_vertex_adk,
     PROVIDER_OPENAI_AGENTS: _check_openai_agents,
 }

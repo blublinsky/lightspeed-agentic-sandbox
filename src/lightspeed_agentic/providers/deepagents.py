@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from lightspeed_agentic.skills import has_skills
 from lightspeed_agentic.types import (
@@ -26,6 +26,12 @@ from lightspeed_agentic.types import (
     ToolResultEvent,
     stringify,
 )
+
+# Provider SDK imports (deepagents, langchain-*, MCP) stay inside functions:
+# - _resolve_model loads only the active backend branch (Vertex / Bedrock / direct).
+# - query() / shape / MCP load their SDKs on first use, not at module import.
+# That keeps optional-extra isolation and avoids importing unused backends; it does
+# not skip work on the hot path once a run is underway.
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +103,6 @@ def _json_schema_to_pydantic(schema: dict[str, Any], name: str = "OutputModel") 
 
 
 def _resolve_field_type(schema: dict[str, Any], name: str) -> Any:
-    from typing import Literal
-
     json_type = schema.get("type", "string")
 
     if json_type == "object":
@@ -114,6 +118,43 @@ def _resolve_field_type(schema: dict[str, Any], name: str) -> Any:
         return Literal[tuple(schema["enum"])]
 
     return _JSON_SCHEMA_TYPE_MAP.get(json_type, str)
+
+
+def _usage_from_message(msg: Any) -> tuple[int, int]:
+    usage = getattr(msg, "usage_metadata", None)
+    if not usage:
+        return 0, 0
+    return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+
+
+async def _shape_structured_output(
+    model: str,
+    schema: Any,
+    system_prompt: str,
+    prompt: str,
+    agent_text: str,
+) -> tuple[Any, int, int]:
+    """Shape pass: tool-free json_schema binding on a model without thinking."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    format_model = _resolve_model(model, reasoning_config=None)
+    structured = format_model.with_structured_output(schema, method="json_schema", include_raw=True)
+    shape_messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(
+            content=(
+                f"Original user request:\n{prompt}\n\n"
+                f"Agent run output:\n{agent_text}\n\n"
+                "Produce the structured response matching the required schema."
+            )
+        ),
+    ]
+    result = await structured.ainvoke(shape_messages)
+    if isinstance(result, dict) and "parsed" in result:
+        parsed = result["parsed"]
+        in_tok, out_tok = _usage_from_message(result.get("raw"))
+        return parsed, in_tok, out_tok
+    return result, 0, 0
 
 
 def _process_ai_message(
@@ -192,15 +233,13 @@ class DeepAgentsProvider(AgentProvider):
         if has_skills(options.cwd):
             agent_kwargs["skills"] = [options.cwd]
 
+        schema_model: Any | None = None
         if options.output_schema:
-            from langchain.agents.structured_output import ToolStrategy
-
-            schema = (
+            schema_model = (
                 _json_schema_to_pydantic(options.output_schema)
                 if isinstance(options.output_schema, dict)
                 else options.output_schema
             )
-            agent_kwargs["response_format"] = ToolStrategy(schema=schema)
 
         mcp_tools: list[Any] = []
         if options.mcp_servers:
@@ -234,27 +273,13 @@ class DeepAgentsProvider(AgentProvider):
         result_text = ""
         total_input_tokens = 0
         total_output_tokens = 0
-        final_state: dict[str, Any] | None = None
-
-        stream_modes: str | list[str] = (
-            ["messages", "values"] if options.output_schema else "messages"
-        )
         input_state = {"messages": [{"role": "user", "content": options.prompt}]}
 
-        async for item in agent.astream(  # type: ignore[call-overload]
+        async for msg, _stream_metadata in agent.astream(  # type: ignore[call-overload]
             input_state,
             config=stream_config,
-            stream_mode=stream_modes,
+            stream_mode="messages",
         ):
-            if options.output_schema:
-                mode, chunk = item
-                if mode == "values":
-                    final_state = chunk
-                    continue
-                msg, _stream_metadata = chunk
-            else:
-                msg, _stream_metadata = item
-
             if msg.type in ("ai", "AIMessageChunk"):
                 events, text_delta, in_tok, out_tok = _process_ai_message(msg)
                 for event in events:
@@ -269,10 +294,17 @@ class DeepAgentsProvider(AgentProvider):
                     call_id=getattr(msg, "tool_call_id", ""),
                 )
 
-        if options.output_schema and final_state:
-            structured = final_state.get("structured_response")
-            if structured is not None:
-                result_text = stringify(structured)
+        if schema_model is not None:
+            structured, in_tok, out_tok = await _shape_structured_output(
+                options.model,
+                schema_model,
+                options.system_prompt,
+                options.prompt,
+                result_text,
+            )
+            result_text = stringify(structured)
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
 
         yield ResultEvent(
             text=result_text,

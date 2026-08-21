@@ -112,7 +112,9 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 
 ## Verification
 
-Harness scope: [e2e-testing.md](e2e-testing.md). **Note:** container BDD scenarios still target the removed HTTP API; batch behavior is verified in unit tests until the harness is migrated.
+Harness scope: [e2e-testing.md](e2e-testing.md). Live batch BDD creates Jobs against
+`SANDBOX_IMAGE`, reads Result CR status, and enriches from pod logs when the CR
+status is generic (see `batch_log_contract.py`).
 
 | Artifact | Rules exercised | Notes |
 |----------|-----------------|-------|
@@ -123,5 +125,6 @@ Harness scope: [e2e-testing.md](e2e-testing.md). **Note:** container BDD scenari
 | [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |
 | [test_publish_results_status.py](../../../tests/test_publish_results_status.py) | 21 | Status assembly from agent output |
 | [test_model_resolution.py](../../../tests/test_model_resolution.py) | 7 | Model env resolution |
+| Live batch BDD | 4–23 (semantic) | [e2e-testing.md](e2e-testing.md) Verification map — context echo, structured output, skills, MCP, reasoning, OTEL |
 
-Legacy HTTP BDD ([sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature), etc.) and evals HTTP clients are **out of date** with the batch entrypoint.
+Evals (`evals/`) still use HTTP against live containers; they are separate from batch BDD.

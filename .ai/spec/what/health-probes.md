@@ -32,4 +32,5 @@ Cross-references: batch lifecycle → `run-api.md`. Credential env mapping → `
 | [test_ready.py](../../../tests/test_ready.py) | R1, `run_readiness_checks()` |
 | [test_batch.py](../../../tests/test_batch.py) | Rule 1 (fail-fast path) |
 
-Container BDD probe scenarios in [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) target the **removed** HTTP API and are pending harness migration.
+Live batch Jobs run in-process readiness (rule 1) before the LLM is invoked; see
+[e2e-testing.md](e2e-testing.md). HTTP probe BDD scenarios were removed.

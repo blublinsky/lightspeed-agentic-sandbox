@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 def _load_skills_toolset(skills_dir: str) -> Any:
     try:
+        from google.adk.code_executors.unsafe_local_code_executor import (
+            UnsafeLocalCodeExecutor,
+        )
         from google.adk.skills import list_skills_in_dir, load_skill_from_dir
         from google.adk.tools.skill_toolset import SkillToolset
 
@@ -44,7 +47,10 @@ def _load_skills_toolset(skills_dir: str) -> Any:
             if (target / skill_id).is_dir()
         ]
         if skills:
-            return SkillToolset(skills=skills)
+            return SkillToolset(
+                skills=skills,
+                code_executor=UnsafeLocalCodeExecutor(),  # type: ignore[no-untyped-call]
+            )
     except Exception as e:
         logger.debug("Failed to load skills toolset from %s: %s", skills_dir, e)
     return None
