@@ -1,16 +1,24 @@
 ---
-apiVersion: tekton.dev/v1
+# apiVersion is tekton.dev/v1beta1 (not v1): Konflux EaaS StepAction refs with the
+# git resolver are not available on tekton.dev/v1 on the Tekton version this
+# pipeline runs against. Do not "upgrade" to v1 without verifying EaaS support.
+apiVersion: tekton.dev/v1beta1
 kind: Pipeline
 metadata:
   name: sandbox-integration-test-pipeline
 spec:
   description: |
-    Runs sandbox BDD integration tests for a single LLM provider in host mode.
-    Clones the sandbox repo at the SNAPSHOT revision, then delegates to
-    .tekton/integration-tests/scripts/run-sandbox-integration-tests.sh.
+    Runs sandbox batch BDD integration tests for a single LLM provider on a Konflux
+    ephemeral OpenShift cluster (EaaS). Installs sandbox e2e fixtures (Result CRDs,
+    OTEL, RBAC), syncs LLM credential Secrets, then runs pytest batch Jobs against
+    the SANDBOX_IMAGE from SNAPSHOT.
+
+    Pipeline apiVersion is tekton.dev/v1beta1 (not v1): EaaS StepAction refs with
+    the git resolver are not supported on v1 on the Tekton version Konflux runs.
 
     Triggered per-provider by IntegrationTestScenario CRs:
       sandbox-integration-anthropic-vertex-deepagents,
+      sandbox-integration-anthropic-bedrock-deepagents,
       sandbox-integration-gemini-vertex-adk,
       sandbox-integration-openai-agents.
   params:
@@ -19,13 +27,85 @@ spec:
       default: '{"components": [{"name":"lightspeed-agentic-sandbox", "containerImage": "quay.io/example/repo:latest"}]}'
       type: string
     - name: provider
-      description: 'E2E matrix id (anthropic-vertex-deepagents, gemini-vertex-adk, openai-agents).'
+      description: 'E2E matrix id (anthropic-vertex-deepagents, anthropic-bedrock-deepagents, gemini-vertex-adk, openai-agents).'
       type: string
     - name: credential-secret
       description: 'Name of the Konflux workspace secret containing provider credentials.'
       type: string
+    - name: namespace
+      description: 'Namespace for sandbox batch e2e fixtures and Jobs'
+      default: 'openshift-lightspeed'
+      type: string
+    - name: openshift-version-prefix
+      description: 'Minor line prefix for eaas-get-latest-openshift-version-by-prefix (include trailing dot, e.g. 4.19.)'
+      default: '4.19.'
+      type: string
   tasks:
-    - name: run-integration-test
+    - name: eaas-provision-space
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
+      params:
+        - name: ownerKind
+          value: PipelineRun
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+    - name: provision-cluster
+      runAfter:
+        - eaas-provision-space
+      params:
+        - name: openshift-version-prefix
+          value: $(params.openshift-version-prefix)
+      taskSpec:
+        params:
+          - name: openshift-version-prefix
+            type: string
+        results:
+          - name: clusterName
+            value: "$(steps.create-cluster.results.clusterName)"
+        steps:
+          - name: pick-version
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
+            params:
+              - name: prefix
+                value: "$(params.openshift-version-prefix)"
+          - name: create-cluster
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.eaas-provision-space.results.secretRef)
+              - name: version
+                value: "$(steps.pick-version.results.version)"
+              - name: instanceType
+                value: "m5.large"
+    - name: run-batch-e2e
+      description: Install sandbox e2e fixtures on EaaS cluster and run batch BDD tests.
+      runAfter:
+        - provision-cluster
       params:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
@@ -33,13 +113,22 @@ spec:
           value: $(params.provider)
         - name: credential-secret
           value: $(params.credential-secret)
+        - name: namespace
+          value: $(params.namespace)
       taskSpec:
         params:
           - name: SNAPSHOT
           - name: provider
             type: string
           - name: credential-secret
+          - name: namespace
+            type: string
+        results:
+          - name: commit
+            value: "$(steps.extract-commit.results.commit)"
         volumes:
+          - name: credentials
+            emptyDir: {}
           - name: credential
             secret:
               secretName: $(params.credential-secret)
@@ -49,40 +138,39 @@ spec:
               items:
                 - key: ca-bundle.crt
                   path: tls-ca-bundle.pem
+          - name: ols-konflux-artifacts-bot-creds
+            secret:
+              secretName: ols-konflux-artifacts-bot
         steps:
-          - name: run-tests
-            image: registry.access.redhat.com/ubi9/python-312:latest
-            volumeMounts:
-              - name: credential
-                mountPath: /var/run/credentials
-              - name: trusted-ca
-                mountPath: /etc/pki/ca-trust/extracted/pem
-                readOnly: true
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.eaas-provision-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: extract-commit
+            results:
+              - name: commit
+                type: string
             env:
               - name: SNAPSHOT
                 value: $(params.SNAPSHOT)
-              - name: PROVIDER
-                value: $(params.provider)
-              - name: ARTIFACT_DIR
-                value: "/workspace/artifacts"
-              - name: REQUESTS_CA_BUNDLE
-                value: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-              - name: SSL_CERT_FILE
-                value: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-            computeResources:
-              requests:
-                cpu: '1'
-                memory: 1Gi
-              limits:
-                cpu: '2'
-                memory: 4Gi
+            image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
-              trap 'echo "error: pipeline step line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
-
-              # --- Parse SNAPSHOT for sandbox component revision ---
-              REVISION=$(echo "${SNAPSHOT}" | python3 -c "
+              COMMIT=$(echo "${SNAPSHOT}" | python3 -c "
               import json, sys
               try:
                   snap = json.load(sys.stdin)
@@ -95,17 +183,141 @@ spec:
                   print(f'error: failed to parse SNAPSHOT: {e}', file=sys.stderr)
                   sys.exit(1)
               ")
+              echo "sandbox-integration commit=${COMMIT}"
+              echo -n "${COMMIT}" > "$(step.results.commit.path)"
+          - name: run-tests
+            resources:
+              requests:
+                memory: "4Gi"
+              limits:
+                memory: "8Gi"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+              - name: credential
+                mountPath: /var/run/credentials
+              - name: trusted-ca
+                mountPath: /etc/pki/ca-trust/extracted/pem
+                readOnly: true
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+              - name: PROVIDER
+                value: $(params.provider)
+              - name: E2E_NAMESPACE
+                value: $(params.namespace)
+              - name: ARTIFACT_DIR
+                value: "/workspace/konflux-artifacts"
+              - name: GIT_REVISION
+                value: "$(steps.extract-commit.results.commit)"
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+              - name: REQUESTS_CA_BUNDLE
+                value: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+              - name: SSL_CERT_FILE
+                value: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+            # Prebuilt oc/git/jq/python3; Tekton runs non-root so runtime dnf fails.
+            image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              trap 'echo "error: pipeline step line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
+
+              REVISION="${GIT_REVISION}"
               echo "Cloning lightspeed-agentic-sandbox@${REVISION}"
 
-              # --- Clone repo at the tested revision ---
-              WORK="/workspace/sandbox"
-              rm -rf "${WORK}"
-              mkdir -p "${WORK}"
-              cd "${WORK}"
-              git init -q
-              git remote add origin https://github.com/openshift/lightspeed-agentic-sandbox.git
-              git fetch --depth 1 origin "${REVISION}"
-              git checkout -q FETCH_HEAD
+              SANDBOX_WORK="/workspace/sandbox"
+              rm -rf "${SANDBOX_WORK}"
+              git clone --depth=1 https://github.com/openshift/lightspeed-agentic-sandbox.git "${SANDBOX_WORK}"
+              cd "${SANDBOX_WORK}"
+              git fetch --depth=1 origin "${REVISION}"
+              git checkout "${REVISION}"
 
-              # --- Delegate to runner script ---
+              echo "Cloning lightspeed-agentic-operator for Result CRDs..."
+              git clone --depth=1 https://github.com/openshift/lightspeed-agentic-operator.git /workspace/operator
+              export OPERATOR_REPO=/workspace/operator
+
+              mkdir -p "${ARTIFACT_DIR}"
               bash .tekton/integration-tests/scripts/run-sandbox-integration-tests.sh "${PROVIDER}"
+          - name: gather-cluster-resources
+            onError: continue
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+              - name: ARTIFACT_DIR
+                value: "/workspace/konflux-artifacts"
+              - name: NAMESPACE
+                value: $(params.namespace)
+            image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+            script: |
+              #!/bin/bash
+              set -x
+              mkdir -p "${ARTIFACT_DIR}"
+              cd "${ARTIFACT_DIR}"
+              oc get jobs -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e -o yaml > batch-jobs.yaml 2>/dev/null || true
+              oc get pods -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e -o yaml > batch-pods.yaml 2>/dev/null || true
+              oc get analysisresults -n "${NAMESPACE}" -o yaml > analysisresults.yaml 2>/dev/null || true
+              oc get configmaps -n "${NAMESPACE}" -l e2e.openshift.io/session -o yaml > e2e-configmaps.yaml 2>/dev/null || true
+              oc logs -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e --tail=500 \
+                > batch-pod-logs.txt 2>/dev/null || true
+              echo "Artifacts gathered:"
+              ls -la "${ARTIFACT_DIR}" || true
+          - name: list-artifacts
+            onError: continue
+            image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+            workingDir: /workspace/konflux-artifacts
+            script: |
+              #!/bin/bash
+              echo "=== Artifacts to push ==="
+              ls -la /workspace/konflux-artifacts || true
+          - name: push-artifacts
+            onError: continue
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/tekton-integration-catalog.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/secure-push-oci/0.1/secure-push-oci.yaml
+            params:
+              - name: workdir-path
+                value: /workspace/konflux-artifacts
+              - name: oci-ref
+                value: "quay.io/openshift-lightspeed/ols-operator-artifacts:ols-agentic-sandbox-integration-$(params.provider)-$(steps.extract-commit.results.commit)"
+              - name: credentials-volume-name
+                value: ols-konflux-artifacts-bot-creds
+          - name: fail-if-any-step-failed
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/tekton-integration-catalog.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/fail-if-any-step-failed/0.1/fail-if-any-step-failed.yaml
+  finally:
+    - name: export-logs-for-retention
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: tasks/export-logs/0.1/export-logs-to-quay.yaml
+      params:
+        - name: pipeline-run-name
+          value: $(context.pipelineRun.name)
+        - name: namespace
+          value: $(context.pipelineRun.namespace)
+        - name: quay-repo
+          value: "quay.io/openshift-lightspeed/ols-operator-artifacts"
+        - name: artifact-credentials-secret
+          value: ols-konflux-artifacts-bot

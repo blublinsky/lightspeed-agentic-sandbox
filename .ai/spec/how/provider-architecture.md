@@ -36,4 +36,6 @@ Package tree: `AGENTS.md`. Behavioral rules: `what/run-api.md`, `what/provider-c
 - **Gemini bash:** Monkey-patches `run_async` for confirmation and `bash -c` wrapping.
 - **MCP Secret headers:** First file (sorted by name) under `/var/secrets/mcp/<secretName>/`.
 - **Containerfile:** Multi-stage hermetic build; `oc`/`kubectl` in image for **agent tools** (not Result CR publishing); user `agent`; `catatonit`; batch CMD.
-- **Unit tests:** `test_run_agent.py`, `test_batch.py`, `test_ready.py`, `test_publish_results_*.py`. **Evals/e2e** still target removed HTTP API — pending migration.
+- **Unit tests:** `test_run_agent.py`, `test_batch.py`, `test_ready.py`, `test_publish_results_*.py`, `test_batch_e2e_helpers.py` (harness helpers, no cluster).
+- **Live batch BDD:** `tests/e2e/` feature files via `scripts/e2e-containers.sh` — see [e2e-testing.md](../what/e2e-testing.md).
+- **Evals:** separate HTTP integration suite (`evals/`); not migrated to the batch entrypoint.

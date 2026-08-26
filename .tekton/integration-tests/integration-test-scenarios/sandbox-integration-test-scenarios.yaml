@@ -36,6 +36,34 @@ spec:
 apiVersion: appstudio.redhat.com/v1beta2
 kind: IntegrationTestScenario
 metadata:
+  name: sandbox-integration-anthropic-bedrock-deepagents
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — Anthropic via Bedrock + DeepAgents
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: anthropic-bedrock-deepagents
+    - name: credential-secret
+      value: bedrock-apitoken
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
   name: sandbox-integration-gemini-vertex-adk
   namespace: crt-nshift-lightspeed-tenant
   labels:

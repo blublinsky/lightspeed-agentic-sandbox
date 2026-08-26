@@ -1,62 +1,39 @@
 Feature: Sandbox E2E contract
-  Verifies: .ai/spec/what/health-probes.md (probes), .ai/spec/what/run-api.md (timeout, context)
+  Verifies: .ai/spec/what/run-api.md (context), .ai/spec/what/audit-logging.md (OTLP traces and audit logs)
   Harness: .ai/spec/what/e2e-testing.md
-  Live tests against one sandbox (see scripts/e2e-containers.sh). Exact context prefix
-  formatting: test_routes.py. Run error rules 22–23 and no-500: test_routes.py,
-  structured_output.feature.
-
-  Scenario: Liveness probe returns ok
-    Given the sandbox service is running
-    When I GET /health
-    Then the HTTP response status code is 200
-    And the response body status is ok
-
-  Scenario: Readiness probe returns ok when credentials are configured
-    Given provider credentials are configured
-    And the sandbox service is running
-    When I GET /ready
-    Then the HTTP response status code is 200
-    And the response body status is ok
-
-  Scenario: Run times out when timeout_ms is too short
-    Given the sandbox service is running
-    And a query that will exceed the timeout has been prepared
-    When I POST run with timeout_ms 1
-    Then the HTTP response status code is 200
-    And success is false
-    And the response summary indicates a timeout
+  Live batch Job tests on a cluster (see scripts/e2e-containers.sh). Exact context prefix
+  formatting: test_run_agent.py. Run error rules 22–23: structured_output.feature.
 
   Scenario: Target namespaces from context reach the model
     Given the sandbox service is running
     And a context with target namespaces and an echo output schema have been prepared
-    When I POST run with the prepared context and schema
-    Then the HTTP response status code is 200
+    When I run the agent with the prepared context and schema
+    Then the run completes successfully
     And success is true
     And the response namespaces field matches the prepared context
 
   Scenario: Previous attempts from context reach the model
     Given the sandbox service is running
     And a context with previous attempts and an echo output schema have been prepared
-    When I POST run with the prepared context and schema
-    Then the HTTP response status code is 200
+    When I run the agent with the prepared context and schema
+    Then the run completes successfully
     And success is true
     And the response first failure reason matches the prepared context
 
-  Scenario: Metrics endpoint records gen_ai histogram samples after a run
+  Scenario: Batch run exports traces and audit logs to OTEL
     Given provider credentials are configured
     And the sandbox service is running
-    And a flat output schema with required fields has been prepared
-    When I POST run with the prepared schema and query
-    Then the HTTP response status code is 200
-    When I GET /metrics
-    Then the HTTP response status code is 200
-    And the response body contains gen_ai histogram metrics
-    And the gen_ai token and duration metrics have recorded samples
+    And the OTEL collector is available for telemetry verification
+    And a simple non-skill query has been prepared
+    When I run the agent with the prepared query and no output schema
+    Then the run completes successfully
+    And the OTEL collector received traces for the batch run
+    And the OTEL collector received audit logs with agenticrun attributes
 
   Scenario: Approved option from context reaches the model
     Given the sandbox service is running
     And a context with approved option and an echo output schema have been prepared
-    When I POST run with the prepared context and schema
-    Then the HTTP response status code is 200
+    When I run the agent with the prepared context and schema
+    Then the run completes successfully
     And success is true
     And the response approved option fields match the prepared context

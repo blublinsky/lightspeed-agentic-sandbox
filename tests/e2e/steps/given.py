@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import secrets
-from pathlib import Path
 from typing import Any
 
+import pytest
+from kubernetes.client import ApiException, AppsV1Api, CoreV1Api  # type: ignore[import-untyped]
 from pytest_bdd import given
 
-from credentials import require_credentials
+from tests.e2e.credentials import require_credentials
+from tests.e2e.otel_verify import assert_otel_deployment_present
+from tests.e2e.skills_fixtures import SKILLS_SOURCE, list_skill_dirs
+from tests.e2e.suite_setup import BatchE2EConfig, DEFAULT_OTEL_DEPLOYMENT
 from schemas_contract import (
     CONTEXT_APPROVED_OPTION_ECHO_SCHEMA,
     CONTEXT_NAMESPACES_ECHO_SCHEMA,
@@ -28,16 +31,48 @@ def provider_credentials_configured(provider_name: str) -> None:
 
 
 @given("the sandbox service is running")
-def sandbox_running(server_url: str) -> None:
-    assert server_url.startswith("http"), f"unexpected server URL: {server_url!r}"
+def sandbox_running(batch_e2e_config: BatchE2EConfig) -> None:
+    assert batch_e2e_config.namespace
+
+
+@given("the OTEL collector is available for telemetry verification")
+def otel_collector_available(
+    batch_e2e_config: BatchE2EConfig,
+    k8s_core_client: CoreV1Api,
+    k8s_apps_client: AppsV1Api,
+) -> None:
+    """Require full e2e fixtures including the in-cluster OTEL collector."""
+    if not batch_e2e_config.verify_full_fixtures:
+        pytest.skip(
+            "E2E_BATCH_VERIFY_FIXTURES=0 — OTEL collector verification disabled "
+            "(run scripts/e2e-install-fixtures.sh and set E2E_BATCH_VERIFY_FIXTURES=1)"
+        )
+    if not batch_e2e_config.otel_endpoint:
+        pytest.skip("OTEL endpoint not configured for batch e2e")
+    try:
+        k8s_apps_client.read_namespaced_deployment(
+            DEFAULT_OTEL_DEPLOYMENT,
+            batch_e2e_config.namespace,
+        )
+    except ApiException as exc:
+        if exc.status == 404:
+            pytest.skip(
+                f"deployment/{DEFAULT_OTEL_DEPLOYMENT} missing in "
+                f"{batch_e2e_config.namespace} (run scripts/e2e-install-fixtures.sh)"
+            )
+        raise
+    assert_otel_deployment_present(k8s_core_client, batch_e2e_config.namespace)
 
 
 @given("the sandbox service is running with skills")
-def sandbox_running_with_skills(server_url: str, e2e_output_dir: Path | None) -> None:
-    assert server_url.startswith("http"), f"unexpected server URL: {server_url!r}"
-    assert e2e_output_dir is not None, (
-        "E2E_OUTPUT_DIR not set — skills not mounted (run via scripts/e2e-containers.sh)"
-    )
+def sandbox_running_with_skills(
+    batch_e2e_config: BatchE2EConfig,
+    bdd_context: dict[str, Any],
+) -> None:
+    assert batch_e2e_config.namespace
+    assert SKILLS_SOURCE.is_dir(), f"skills fixtures missing at {SKILLS_SOURCE}"
+    assert list_skill_dirs(), f"no skills under {SKILLS_SOURCE}"
+    bdd_context["mount_skills"] = True
 
 
 @given("a simple non-skill query has been prepared")
@@ -47,34 +82,6 @@ def prepare_simple_non_skill(bdd_context: dict[str, Any]) -> None:
         "Answer with plain text only. Do not call any tools."
     )
     bdd_context["output_schema"] = None
-
-
-@given("a query that will exceed the timeout has been prepared")
-def prepare_timeout_query(bdd_context: dict[str, Any], provider_name: str) -> None:
-    """Force multi-step tool work that guarantees multiple LLM roundtrips.
-
-    Known issue: the OpenAI agents SDK swallows asyncio.CancelledError internally,
-    so asyncio.wait_for cannot enforce sub-second timeouts. Gemini's ADK has a
-    similar behavior. Skip for affected providers until the timeout mechanism is
-    reworked (tracked separately).
-    """
-    import pytest
-
-    broken_timeout_providers = {"openai-agents", "gemini-vertex-adk"}
-    if provider_name in broken_timeout_providers:
-        pytest.skip(
-            f"{provider_name} SDK does not propagate asyncio cancellation — "
-            "timeout_ms cannot be tested via asyncio.wait_for"
-        )
-
-    bdd_context["query"] = (
-        "You MUST use tools to complete this task. "
-        "Step 1: Use apply_patch to create a file /tmp/timeout_test.txt with content 'hello'. "
-        "Step 2: Read the file back to verify it. "
-        "Step 3: Use apply_patch to append ' world' to it. "
-        "Step 4: Read it again and report the final content. "
-        "Do NOT skip any steps. Each step requires a separate tool call."
-    )
 
 
 @given("a context with target namespaces and an echo output schema have been prepared")
@@ -213,15 +220,16 @@ def prepare_adversarial(bdd_context: dict[str, Any]) -> None:
 
 
 @given("the sandbox service is running with reasoning configured")
-def sandbox_running_with_reasoning(server_url: str) -> None:
+def sandbox_running_with_reasoning(batch_e2e_config: BatchE2EConfig) -> None:
     import json as _json
 
-    import pytest
-
-    assert server_url.startswith("http"), f"unexpected server URL: {server_url!r}"
-    raw = os.environ.get("LIGHTSPEED_REASONING_CONFIG", "").strip()
+    assert batch_e2e_config.namespace
+    raw = batch_e2e_config.job_env.get("LIGHTSPEED_REASONING_CONFIG", "").strip()
     if not raw:
-        pytest.skip("LIGHTSPEED_REASONING_CONFIG not set — reasoning tests skipped")
+        pytest.skip(
+            "LIGHTSPEED_REASONING_CONFIG not set — run via scripts/e2e-containers.sh "
+            "or export LIGHTSPEED_REASONING_CONFIG for batch Jobs"
+        )
     parsed = _json.loads(raw)
     assert isinstance(parsed, dict), (
         f"LIGHTSPEED_REASONING_CONFIG must be a JSON object, got: {raw!r}"
@@ -229,15 +237,16 @@ def sandbox_running_with_reasoning(server_url: str) -> None:
 
 
 @given("the sandbox service is running with MCP servers configured")
-def sandbox_running_with_mcp(server_url: str) -> None:
+def sandbox_running_with_mcp(batch_e2e_config: BatchE2EConfig) -> None:
     import json as _json
 
-    import pytest
-
-    assert server_url.startswith("http"), f"unexpected server URL: {server_url!r}"
-    raw = os.environ.get("LIGHTSPEED_MCP_SERVERS", "").strip()
+    assert batch_e2e_config.namespace
+    raw = batch_e2e_config.job_env.get("LIGHTSPEED_MCP_SERVERS", "").strip()
     if not raw:
-        pytest.skip("LIGHTSPEED_MCP_SERVERS not set — MCP tests skipped")
+        pytest.skip(
+            "LIGHTSPEED_MCP_SERVERS not set — run scripts/e2e-install-fixtures.sh and "
+            "scripts/e2e-containers.sh, or export LIGHTSPEED_MCP_SERVERS for batch Jobs"
+        )
     parsed = _json.loads(raw)
     assert isinstance(parsed, list), f"LIGHTSPEED_MCP_SERVERS must be a JSON array, got: {raw!r}"
     assert len(parsed) > 0, "LIGHTSPEED_MCP_SERVERS is an empty array"
@@ -260,9 +269,12 @@ def prepare_mcp_tool_invocation(bdd_context: dict[str, Any]) -> None:
 def prepare_mcp_nonexistent_tool(bdd_context: dict[str, Any]) -> None:
     bdd_context["output_schema"] = MCP_TOOL_OUTPUT_SCHEMA
     bdd_context["query"] = (
-        "Actually attempt to call a tool named 'nonexistent_tool_xyz_999' from the MCP "
-        "server named 'mock-ocp-mcp'. Do not assume the outcome — make the call. "
+        "You MUST invoke tools only through the MCP server named 'mock-ocp-mcp'. "
+        "Do NOT use shell, bash, exec_command, or any local commands. "
+        "Call the tool named 'nonexistent_tool_xyz_999' on mock-ocp-mcp. "
+        "Do not assume the outcome — make the MCP tool call. "
         "Return a single JSON object only (no markdown). Report the real outcome: "
-        "set success to true only if the tool call actually succeeded, false otherwise, "
-        "and put a short description of what happened (including the tool name) in summary."
+        "set success to true only if the MCP tool call actually succeeded, false otherwise, "
+        "and put a short description of what happened (include mock-ocp-mcp and the tool name) "
+        "in summary."
     )

@@ -19,7 +19,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI semantic conventions, span events for LLM calls and tool execution, compliance audit trail |
-| [e2e-testing.md](what/e2e-testing.md) | Container BDD harness: run modes, live vs unit split, OLS-3220 spike findings |
+| [e2e-testing.md](what/e2e-testing.md) | Batch cluster BDD harness: OpenShift Jobs, fixtures, live vs unit split |
 
 ### how/ — Architecture Specifications
 

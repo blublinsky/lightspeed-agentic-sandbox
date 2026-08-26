@@ -2,6 +2,7 @@ UV := uv
 
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 IMAGE := lightspeed-agentic-sandbox:latest
+SANDBOX_IMAGE ?= $(IMAGE)
 
 ifneq ($(filter e2e,$(MAKECMDGOALS)),)
 E2E_EXTRA_TARGETS := $(filter-out e2e,$(MAKECMDGOALS))
@@ -60,8 +61,8 @@ eval: image ## Run evals against live containers (use EVAL_ARGS to filter, e.g. 
 eval-report: image ## Run evals and generate JSON report
 	PYTEST="$(UV) run pytest" bash evals/run.sh --eval-report=evals/report.json $(EVAL_ARGS)
 
-e2e: image ## E2E BDD (make e2e | make e2e openai-agents | make e2e openai-agents gpt-4.1-mini). Optional: E2E_ARGS for pytest.
-	IMAGE="$(IMAGE)" E2E_ARGS="$(E2E_ARGS)" bash scripts/e2e-containers.sh $(filter-out e2e,$(MAKECMDGOALS))
+e2e: image ## Batch cluster E2E BDD (make e2e openai-agents). Needs oc/KUBECONFIG; optional: E2E_ARGS, E2E_SKIP_FIXTURES=1.
+	IMAGE="$(IMAGE)" SANDBOX_IMAGE="$(SANDBOX_IMAGE)" E2E_ARGS="$(E2E_ARGS)" bash scripts/e2e-containers.sh $(filter-out e2e,$(MAKECMDGOALS))
 
 requirements: pyproject.toml ## Generate requirements.txt files for Konflux hermetic builds
 	$(UV) pip compile pyproject.toml --extra all --extra eval \

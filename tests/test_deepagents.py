@@ -47,7 +47,11 @@ def _mock_deepagents_modules(
     mcp_client_cls: MagicMock | None = None,
 ) -> dict[str, Any]:
     mock_tool_strategy = MagicMock(side_effect=lambda schema, **_kw: schema)
-    mock_structured_output = MagicMock(ToolStrategy=mock_tool_strategy)
+    mock_provider_strategy = MagicMock(side_effect=lambda schema, **_kw: schema)
+    mock_structured_output = MagicMock(
+        ToolStrategy=mock_tool_strategy,
+        ProviderStrategy=mock_provider_strategy,
+    )
     mock_agents = MagicMock(structured_output=mock_structured_output)
     mock_langchain = MagicMock(agents=mock_agents)
 
@@ -466,22 +470,43 @@ class TestEventMapping:
         assert len(tool_results[0].output) == TOOL_OUTPUT_MAX_CHARS
 
     @pytest.mark.asyncio
-    async def test_structured_output_from_final_state(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When output_schema is set, ResultEvent text comes from structured_response."""
+    async def test_structured_output_two_phase(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When output_schema is set, agent runs then shape pass produces Result JSON."""
         monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
 
         mock_ai_message = MagicMock()
         mock_ai_message.type = "ai"
-        mock_ai_message.content = "ignored stream text"
+        mock_ai_message.content = "agent answer"
         mock_ai_message.tool_calls = []
-        mock_ai_message.usage_metadata = {"input_tokens": 4, "output_tokens": 6}
+        mock_ai_message.usage_metadata = {"input_tokens": 3, "output_tokens": 4}
         text_block = MagicMock()
         text_block.type = "text"
-        text_block.text = "ignored stream text"
+        text_block.text = "agent answer"
         mock_ai_message.content_blocks = [text_block]
+
+        async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            yield (mock_ai_message, {"langgraph_node": "agent"})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+
+        mock_raw = MagicMock(usage_metadata={"input_tokens": 5, "output_tokens": 6})
+        mock_structured_runnable = MagicMock()
+        mock_structured_runnable.ainvoke = AsyncMock(
+            return_value={"parsed": {"status": "ok"}, "raw": mock_raw}
+        )
+        mock_format_model = MagicMock()
+        mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
+        mock_agent_model = MagicMock()
+
+        def resolve_model_side_effect(
+            _model: str, reasoning_config: dict[str, Any] | None = None
+        ) -> MagicMock:
+            if reasoning_config and reasoning_config.get("thinking"):
+                return mock_agent_model
+            return mock_format_model
 
         output_schema = {
             "type": "object",
@@ -489,24 +514,101 @@ class TestEventMapping:
             "required": ["status"],
         }
 
-        async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
-            yield ("messages", (mock_ai_message, {"langgraph_node": "agent"}))
-            yield (
-                "values",
-                {"structured_response": {"status": "ok"}},
-            )
+        with patch.dict(sys.modules, _mock_deepagents_modules(mock_create, MagicMock())):
+            import importlib
+
+            import lightspeed_agentic.providers.deepagents as mod
+
+            importlib.reload(mod)
+            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
+                provider = mod.DeepAgentsProvider()
+                events = await _collect_events(
+                    provider,
+                    _base_options(output_schema=output_schema),
+                )
+
+        assert "response_format" not in mock_create.call_args[1]
+        mock_format_model.with_structured_output.assert_called_once()
+        result_events = [e for e in events if isinstance(e, ResultEvent)]
+        assert len(result_events) == 1
+        assert result_events[0].text == '{"status": "ok"}'
+        assert result_events[0].input_tokens == 8
+        assert result_events[0].output_tokens == 10
+
+    @pytest.mark.asyncio
+    async def test_two_phase_structured_output_with_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Thinking + schema: no response_format on agent; shape via with_structured_output."""
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+
+        mock_ai_message = MagicMock()
+        mock_ai_message.type = "ai"
+        mock_ai_message.content = "agent answer"
+        mock_ai_message.tool_calls = []
+        mock_ai_message.usage_metadata = {"input_tokens": 3, "output_tokens": 4}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "agent answer"
+        mock_ai_message.content_blocks = [text_block]
+
+        async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            yield (mock_ai_message, {"langgraph_node": "agent"})
 
         mock_agent = MagicMock()
         mock_agent.astream = mock_astream
-        with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
-            events = await _collect_events(
-                provider,
-                _base_options(output_schema=output_schema),
-            )
+        mock_create = MagicMock(return_value=mock_agent)
+
+        mock_raw = MagicMock(usage_metadata={"input_tokens": 5, "output_tokens": 6})
+        mock_structured_runnable = MagicMock()
+        mock_structured_runnable.ainvoke = AsyncMock(
+            return_value={"parsed": {"status": "ok"}, "raw": mock_raw}
+        )
+        mock_format_model = MagicMock()
+        mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
+        mock_agent_model = MagicMock()
+
+        def resolve_model_side_effect(
+            _model: str, reasoning_config: dict[str, Any] | None = None
+        ) -> MagicMock:
+            if reasoning_config and reasoning_config.get("thinking"):
+                return mock_agent_model
+            return mock_format_model
+
+        output_schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        }
+
+        with patch.dict(sys.modules, _mock_deepagents_modules(mock_create, MagicMock())):
+            import importlib
+
+            import lightspeed_agentic.providers.deepagents as mod
+
+            importlib.reload(mod)
+            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
+                provider = mod.DeepAgentsProvider()
+                events = await _collect_events(
+                    provider,
+                    _base_options(
+                        output_schema=output_schema,
+                        reasoning_config={"thinking": {"type": "enabled", "budget_tokens": 1024}},
+                    ),
+                )
+
+        assert "response_format" not in mock_create.call_args[1]
+        mock_format_model.with_structured_output.assert_called_once()
+        call_kwargs = mock_format_model.with_structured_output.call_args[1]
+        assert call_kwargs["method"] == "json_schema"
+        assert call_kwargs["include_raw"] is True
 
         result_events = [e for e in events if isinstance(e, ResultEvent)]
         assert len(result_events) == 1
         assert result_events[0].text == '{"status": "ok"}'
+        assert result_events[0].input_tokens == 8
+        assert result_events[0].output_tokens == 10
 
     @pytest.mark.asyncio
     async def test_recursion_limit_passed_to_astream(self, monkeypatch: pytest.MonkeyPatch) -> None:

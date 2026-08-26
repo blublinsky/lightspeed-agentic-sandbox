@@ -6,21 +6,24 @@ Feature: MCP server connectivity
   Background:
     Given the sandbox service is running with MCP servers configured
 
-  Scenario: Sandbox starts successfully with MCP servers configured
-    When I GET /health
-    Then the HTTP response status code is 200
-    And the response body status is ok
+  Scenario: Batch run succeeds with MCP servers configured
+    Given a simple non-skill query has been prepared
+    When I run the agent with the prepared query and no output schema
+    Then the run completes successfully
+    And success is true
+    And the response has a non-empty summary
 
   Scenario: Agent can invoke an MCP tool and use its output
     Given an MCP tool invocation query has been prepared
-    When I POST run with the prepared schema and query
-    Then the HTTP response status code is 200
+    When I run the agent with the prepared schema and query
+    Then the run completes successfully
     And success is true
     And the response summary contains the sentinel namespace from the tool
 
   Scenario: Agent returns a graceful error envelope when a tool call fails
     Given an MCP query targeting a nonexistent tool has been prepared
-    When I POST run with the prepared schema and query
-    Then the HTTP response status code is 200
+    When I run the agent with the prepared schema and query
+    Then the batch job completes
     And success is false
     And the response has a non-empty summary
+    And the response summary indicates an MCP tool failure

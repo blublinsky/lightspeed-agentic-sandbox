@@ -1,4 +1,4 @@
-"""E2E fixtures — single provider per process (no parametrization)."""
+"""E2E fixtures — batch Job harness only (no HTTP server)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,21 @@ from typing import Any
 
 import pytest
 from kubernetes import config as k8s_config  # type: ignore[import-untyped]
-from kubernetes.client import ApiClient, CoreV1Api, CustomObjectsApi  # type: ignore[import-untyped]
+from kubernetes.client import (  # type: ignore[import-untyped]
+    ApiClient,
+    AppsV1Api,
+    BatchV1Api,
+    CoreV1Api,
+    CustomObjectsApi,
+)
 
-from tests.e2e.runner import RunHttpResult, run_query
+from tests.e2e.batch_runner import run_batch_query
+from tests.e2e.run_result import E2ERunResult, batch_to_run_result
+from tests.e2e.suite_setup import (
+    BatchE2EConfig,
+    load_batch_e2e_config,
+    setup_batch_suite,
+)
 from steps.given import *  # noqa: F403 — step fixtures must be in conftest namespace
 from steps.when import *  # noqa: F403
 from steps.then import *  # noqa: F403
@@ -25,18 +37,10 @@ def bdd_context() -> dict[str, Any]:
 
 
 @pytest.fixture(scope="session")
-def server_url() -> str:
-    url = os.environ.get("SANDBOX_SERVICE_URL", "").strip()
-    if not url:
-        pytest.fail("SANDBOX_SERVICE_URL is not set (use scripts/e2e-containers.sh or export it)")
-    return url.rstrip("/")
-
-
-@pytest.fixture(scope="session")
 def provider_name() -> str:
     name = os.environ.get("E2E_PROVIDER", "").strip()
     if not name:
-        pytest.fail("E2E_PROVIDER is not set (e2e-containers.sh exports it)")
+        pytest.fail("E2E_PROVIDER is not set")
     return name
 
 
@@ -72,6 +76,74 @@ def k8s_core_client(_k8s_api_client: ApiClient) -> CoreV1Api:
     return CoreV1Api(_k8s_api_client)
 
 
+@pytest.fixture(scope="session")
+def k8s_batch_client(_k8s_api_client: ApiClient) -> BatchV1Api:
+    """Authenticated BatchV1Api for sandbox batch Jobs."""
+    return BatchV1Api(_k8s_api_client)
+
+
+@pytest.fixture(scope="session")
+def k8s_apps_client(_k8s_api_client: ApiClient) -> AppsV1Api:
+    """Authenticated AppsV1Api for fixture verification."""
+    return AppsV1Api(_k8s_api_client)
+
+
+@pytest.fixture(scope="session")
+def batch_e2e_config() -> BatchE2EConfig:
+    """Resolved E2E configuration for batch Job runs."""
+    return load_batch_e2e_config()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _batch_suite_lifecycle(
+    batch_e2e_config: BatchE2EConfig,
+    _k8s_api_client: ApiClient,
+) -> None:
+    """Session setup (operator TestMain equivalent)."""
+    core_api = CoreV1Api(_k8s_api_client)
+    apps_api = AppsV1Api(_k8s_api_client)
+    setup_batch_suite(core_api, apps_api, batch_e2e_config)
+
+
+@pytest.fixture
+def run_runner(
+    batch_e2e_config: BatchE2EConfig,
+    k8s_core_client: CoreV1Api,
+    k8s_batch_client: BatchV1Api,
+    k8s_client: CustomObjectsApi,
+) -> Callable[..., E2ERunResult]:
+    """Launch a sandbox batch Job and return the assertion envelope."""
+
+    def _run(
+        query: str,
+        *,
+        system_prompt: str = "You are a helpful assistant. Follow instructions exactly.",
+        output_schema: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        step: str = "analysis",
+        wait_timeout_seconds: float = 600.0,
+        timeout_ms: int | None = None,
+        mount_skills: bool = False,
+    ) -> E2ERunResult:
+        batch = run_batch_query(
+            batch_e2e_config,
+            k8s_core_client,
+            k8s_batch_client,
+            k8s_client,
+            query,
+            system_prompt=system_prompt,
+            output_schema=output_schema,
+            context=context,
+            step=step,
+            wait_timeout_seconds=wait_timeout_seconds,
+            timeout_ms=timeout_ms,
+            mount_skills=mount_skills,
+        )
+        return batch_to_run_result(batch)
+
+    return _run
+
+
 @pytest.fixture
 def scenario_cleanup() -> Generator[None, None, None]:
     """Yield fixture that runs cleanup.sh on test teardown.
@@ -98,25 +170,3 @@ def scenario_cleanup() -> Generator[None, None, None]:
                 result.returncode,
                 result.stderr.decode(errors="replace").strip(),
             )
-
-
-@pytest.fixture
-def run_runner(server_url: str) -> Callable[..., RunHttpResult]:
-    def _run(
-        query: str,
-        *,
-        system_prompt: str = "You are a helpful assistant. Follow instructions exactly.",
-        output_schema: dict[str, Any] | None = None,
-        context: dict[str, Any] | None = None,
-        timeout_ms: int | None = None,
-    ) -> RunHttpResult:
-        return run_query(
-            server_url,
-            query,
-            system_prompt=system_prompt,
-            output_schema=output_schema,
-            context=context,
-            timeout_ms=timeout_ms,
-        )
-
-    return _run
