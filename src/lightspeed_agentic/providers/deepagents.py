@@ -591,8 +591,8 @@ def _process_ai_message(
                 if isinstance(block, dict)
                 else getattr(block, "reasoning", "")
             )
-            events.append(ThinkingDeltaEvent(thinking=reasoning))
-            events.append(ContentBlockStopEvent())
+            if reasoning:
+                events.append(ThinkingDeltaEvent(thinking=reasoning))
         elif btype == "text":
             text = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
             if text:
@@ -604,6 +604,11 @@ def _process_ai_message(
         if content and not msg.tool_calls:
             events.append(TextDeltaEvent(text=content))
             text_delta += content
+
+    if any(event.type == "thinking_delta" for event in events) and (
+        msg.type != "AIMessageChunk" or getattr(msg, "chunk_position", None) == "last"
+    ):
+        events.append(ContentBlockStopEvent())
 
     usage = getattr(msg, "usage_metadata", None)
     if usage:
@@ -848,6 +853,7 @@ class DeepAgentsProvider(AgentProvider):
             }
             stream_config["callbacks"] = [generation_callback]
             result_text = ""
+            thinking_active = False
             pending_tool_results: list[tuple[str, str, str, Any, ToolResultEvent]] = []
             total_input_tokens = 0
             total_output_tokens = 0
@@ -921,7 +927,21 @@ class DeepAgentsProvider(AgentProvider):
                         include_tool_calls=include_tool_calls,
                     )
                     for provider_event in events:
+                        if thinking_active and provider_event.type == "text_delta":
+                            yield ContentBlockStopEvent()
+                            thinking_active = False
                         yield provider_event
+                        if provider_event.type == "thinking_delta":
+                            thinking_active = True
+                        elif provider_event.type in ("content_block_stop", "tool_call"):
+                            thinking_active = False
+                    if (
+                        msg.type == "AIMessageChunk"
+                        and getattr(msg, "chunk_position", None) == "last"
+                        and thinking_active
+                    ):
+                        yield ContentBlockStopEvent()
+                        thinking_active = False
                     result_text += text_delta
                     total_input_tokens += in_tok
                     total_output_tokens += out_tok
