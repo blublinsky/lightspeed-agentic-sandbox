@@ -225,7 +225,7 @@ spec:
                 -l app=lightspeed-otel-collector -o name 2>/dev/null || true); do
                 echo "=== ${pod} ===" >> otel-collector-logs.txt
                 oc logs -n "${NAMESPACE}" "${pod}" \
-                  --all-containers=true --prefix --timestamps --tail=10000 \
+                  --all-containers=true --prefix --timestamps --tail=-1 \
                   >> otel-collector-logs.txt 2>/dev/null || true
               done
               echo "Artifacts gathered:"

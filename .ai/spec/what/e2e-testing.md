@@ -56,6 +56,7 @@ belongs in unit tests.
   Job, waits for completion, reads Result CR, optionally enriches from pod logs.
   [PLANNED: OLS-3743] Every Job sets valid `LIGHTSPEED_AGENT_TIMEOUT_SECONDS`
   and `LIGHTSPEED_AGENT_MAX_TURNS` values because both become required.
+- **Collector reconstruction evidence** — keep the existing detailed `debug` exporter. `otel_verify.py` reads available current-pod logs without a tail limit and validates the selected run's native IDs/parentage, invocation inputs and terminal outcome, ordered generation parts, actual tool-call/source joins, statuses/intervals, and separate root/generation usage. Text and reasoning parts must retain string content, including observed empty strings; successful invocation output must contain exactly one assistant message with one text part. Empty generation parts, partial/error evidence, and provider-specific generic parts remain valid. The When step records whether the submitted schema is nonempty, and telemetry checks use that explicit shaping expectation. A no-schema request is serialized to batch input as `{}`: it skips shaping even though the invocation records `gen_ai.output.type="json"`. The output-type attribute alone MUST NOT imply a shaping pass. Nonempty-schema success still requires separate main/shaping generations. Counts are compared only when all generation counts were observed; missing SDK metadata is not invented. Tool completion must precede the next main-agent generation; each observed inspection chunk must start after its source tool completes and finish before that next generation. Concurrent sibling tools remain unordered, and trusted skill reads need no inspection span. The existing benign/malicious inspection scenarios additionally require joined inspection evidence, source retention, and no generation or terminal output after rejection. Collector text parsing ignores nested events and unrelated log records, preserves JSON escapes and nanoseconds, and reports the last unsatisfied check when polling times out. It splits only at physical LF log boundaries (also accepting CRLF), preserving Unicode NEL/line/paragraph separators inside JSON payload strings. CI retains the available collector output in `otel-collector-logs.txt` with `--tail=-1`; Kubernetes rotation/restarts can still make evidence unavailable. Offline helper tests do not constitute a live-route run or downstream compatibility approval.
 - **Cluster fixtures** — `scripts/e2e-install-fixtures.sh` installs Result CRDs,
   sandbox ServiceAccount/RBAC, OTEL collector, mock MCP server. LLM creds synced via
   `scripts/e2e-install-openai-creds.sh` (or Vertex secret scripts).
@@ -115,7 +116,7 @@ tests/e2e/
 ├── suite_setup.py         # session config + cluster preflight
 ├── run_result.py          # batch run result envelope for BDD steps
 ├── skills_fixtures.py     # skills ConfigMap helpers
-├── otel_verify.py         # collector log polling
+├── otel_verify.py         # collector log polling and reconstruction checks
 ├── conftest.py            # k8s clients, batch_e2e_config, run_runner
 ├── credentials.py         # preflight credential checks per provider
 ├── config.env             # default models for e2e (sourced in clean env)
@@ -241,6 +242,7 @@ Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
 [test_batch.py](../../../tests/test_batch.py),
 [test_ready.py](../../../tests/test_ready.py),
 [test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (harness helpers, native Kubernetes SDK log decoding and MCP sentinel reconstruction, no cluster),
+[test_otel_verify.py](../../../tests/test_otel_verify.py) (Collector text reconstruction, incomplete/inconsistent evidence rejection, and executable CI log-retention regression, no cluster),
 [test_e2e_credentials.py](../../../tests/test_e2e_credentials.py) (credential preflight, including Bedrock Konflux mount),
 [test_analysis_schemas.py](../../../tests/test_analysis_schemas.py) (operator analysis JSON schemas),
 [test_analysis_tokens.py](../../../tests/test_analysis_tokens.py) (find-token component token assertions).

@@ -16,6 +16,8 @@ def _run_query(bdd_context: dict[str, Any], run_runner: Any, **kwargs: Any) -> N
         kwargs["job_env_overrides"] = job_env_overrides
     res: E2ERunResult = run_runner(bdd_context["query"], **kwargs)
     store_run_result(bdd_context, res)
+    # Batch serializes no schema as {}; both None and {} skip provider shaping.
+    bdd_context["run_expects_shaping"] = bool(kwargs.get("output_schema"))
 
 
 @when("I run the agent with the prepared skill-script query")

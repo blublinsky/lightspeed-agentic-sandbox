@@ -18,6 +18,27 @@ from .helpers import TEST_WORKFLOW_MAX_TURNS, make_model_route
 _MODEL = "claude-sonnet-4-6"
 
 
+@pytest.mark.parametrize("thinking", ["", "observed Vertex reasoning"])
+def test_vertex_native_thinking_block_retains_observed_text_and_order(thinking: str) -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _generation_parts
+
+    message = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": thinking},
+            {"type": "text", "text": "answer"},
+            {"type": "redacted_thinking", "data": "opaque-do-not-invent-text"},
+        ],
+        response_metadata={"model_name": "observed-vertex-model"},
+    )
+    assert message.content_blocks[0]["type"] == "non_standard"
+    assert _generation_parts(message) == [
+        {"type": "reasoning", "content": thinking},
+        {"type": "text", "content": "answer"},
+    ]
+
+
 @pytest.fixture
 def generation_callback(
     span_exporter: Any,
