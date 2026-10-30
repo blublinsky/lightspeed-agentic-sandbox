@@ -121,7 +121,7 @@ The existing `gen_ai.choice` projection and its gates remain unchanged. DeepAgen
 
 18a. Sandbox telemetry MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`.
 
-18b. Each DeepAgents inspection MUST create the contract's `tool_result.inspection` span and attach it to the parent agent trace.
+18b. Each DeepAgents inspection MUST create the contract's `tool_result.inspection` span and attach it to the parent agent trace. Every validated classifier decision MUST export `inspection.category`: `"none"` for a benign verdict or the detected category for a malicious verdict. Classifier failures without a valid decision MUST omit the category.
 
 18c. The sandbox can add controlled tool, provider, model, and tool-call correlation identifiers to the contract-defined attributes. Each inspection span MUST include `gen_ai.tool.call.id` when the inspected `ToolMessage` provides a non-empty call ID. This value MUST match the correlated `execute_tool` span.
 
@@ -171,6 +171,7 @@ The existing `gen_ai.choice` projection and its gates remain unchanged. DeepAgen
 
 ## Verification
 
+- Inspection decision categories: [test_tool_result_inspection_telemetry.py](../../../tests/test_tool_result_inspection_telemetry.py) verifies benign/malicious categories and category absence on provider/invalid-response failures; [test_otel_verify.py](../../../tests/test_otel_verify.py) passes real inspector span attributes through the CI reconstruction verifier.
 - Native OpenAI offline integration: [test_openai_models.py](../../../tests/test_openai_models.py) exercises a real DeepAgents/ChatOpenAI file-tool/shaping loop with scripted HTTP/SSE. It checks all three response IDs and individual generation usage, plus terminal input/output totals including shaping exactly once. This does not verify live exports or satisfy the parent telemetry compatibility/owner-review gate.
 - Independent native tool evidence: [test_deepagents_tool_spans.py](../../../tests/test_deepagents_tool_spans.py) covers success, native errors, SDK Command results, actual/missing IDs, and pending interruption. [test_deepagents.py](../../../tests/test_deepagents.py) exercises real graph rejection and classifier exhaustion with retained source results, no normalized/later-model release, and content-filtered stdout copies. [test_tracing.py](../../../tests/test_tracing.py) verifies audit/content settings against independent source OTLP export.
 - Exported regressions: [test_run_agent.py](../../../tests/test_run_agent.py), [test_audit.py](../../../tests/test_audit.py), [test_tracing.py](../../../tests/test_tracing.py), and [test_deepagents_generation_spans.py](../../../tests/test_deepagents_generation_spans.py) cover invocation/tool spans, shared DeepAgents capture, and retained audit/log projections. [test_gemini_models.py](../../../tests/test_gemini_models.py) covers offline Vertex Gemini construction. The Vertex/Google case in `test_deepagents_generation_spans.py` covers shared DeepAgents capture with a fake model and a directly constructed route.

@@ -89,6 +89,7 @@ async def test_benign_span_contains_only_controlled_metadata(
 
     attrs = tracer.spans[0].attributes
     assert attrs["inspection.outcome"] == "benign"
+    assert attrs["inspection.category"] == "none"
     assert attrs["inspection.runtime"] == "deepagents"
     assert attrs["inspection.result_type"] == "result"
     assert attrs["llm.provider"] == "anthropic"
@@ -146,6 +147,7 @@ async def test_classifier_error_telemetry_is_controlled(caplog: pytest.LogCaptur
         )
 
     assert tracer.spans[0].attributes["inspection.outcome"] == "classifier_error"
+    assert "inspection.category" not in tracer.spans[0].attributes
     assert tracer.spans[0].attributes["inspection.failure_type"] == "provider_error"
     assert "inspection.provider_status_code" not in tracer.spans[0].attributes
     assert "inspection.provider_error_type" not in tracer.spans[0].attributes
@@ -188,6 +190,7 @@ async def test_invalid_response_records_only_bounded_shape(
         )
 
     assert error.value.failure_type == "invalid_response"
+    assert "inspection.category" not in tracer.spans[0].attributes
     assert tracer.spans[0].attributes["inspection.response_issue"] == issue
     final_warning = next(
         record

@@ -177,6 +177,14 @@ def _generation_parts(message: Any) -> list[dict[str, Any]]:
             reasoning = _content_block_value(block, "reasoning")
             if reasoning is not None:
                 parts.append({"type": "reasoning", "content": reasoning})
+        elif block_type == "non_standard":
+            # ChatAnthropicVertex lacks the provider tag used by LangChain's
+            # standard translator. Retain its observed native thinking text.
+            native = _content_block_value(block, "value")
+            if _content_block_value(native, "type") == "thinking":
+                thinking = _content_block_value(native, "thinking")
+                if thinking is not None:
+                    parts.append({"type": "reasoning", "content": thinking})
         elif block_type == "tool_call":
             part: dict[str, Any] = {"type": "tool_call"}
             for source, target in (("id", "id"), ("name", "name"), ("args", "arguments")):

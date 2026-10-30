@@ -234,9 +234,9 @@ async def inspect_tool_result(
                 raise
 
             span.set_attribute("inspection.attempt_count", attempt_count)
+            span.set_attribute("inspection.category", decision.category)
             if decision.injection_detected:
                 span.set_attribute("inspection.outcome", "malicious")
-                span.set_attribute("inspection.category", decision.category)
                 span.set_status(Status(StatusCode.ERROR))
                 logger.warning(
                     "malicious tool result detected",

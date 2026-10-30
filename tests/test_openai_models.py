@@ -588,6 +588,7 @@ def _openai_response_stream(
     input_tokens: int,
     output_tokens: int,
     reasoning: bool = False,
+    reasoning_text: str | None = None,
 ) -> httpx.Response:
     """Encode scripted native Responses events, including real streaming tool arguments."""
     response = _openai_response(
@@ -641,11 +642,13 @@ def _openai_response_stream(
             {"type": "response.completed", "response": response},
         ]
     )
-    if reasoning:
+    if reasoning or reasoning_text is not None:
         reasoning_item = {
             "id": f"rs_{response_id}",
             "type": "reasoning",
-            "summary": [],
+            "summary": [{"type": "summary_text", "text": reasoning_text}]
+            if reasoning_text is not None
+            else [],
             "status": "completed",
         }
         response["output"].insert(0, reasoning_item)
@@ -654,14 +657,36 @@ def _openai_response_stream(
                 event["output_index"] += 1
         # A completed stream must not be confused with the initial item snapshot
         # that LangChain retains in its aggregated reasoning content block.
-        events[1:1] = [
+        reasoning_events = [
             {
                 "type": "response.output_item.added",
                 "output_index": 0,
-                "item": {**reasoning_item, "status": "in_progress"},
+                "item": {**reasoning_item, "summary": [], "status": "in_progress"},
             },
-            {"type": "response.output_item.done", "output_index": 0, "item": reasoning_item},
         ]
+        if reasoning_text is not None:
+            reasoning_events.extend(
+                [
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": reasoning_item["id"],
+                        "output_index": 0,
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": ""},
+                    },
+                    {
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": reasoning_item["id"],
+                        "output_index": 0,
+                        "summary_index": 0,
+                        "delta": reasoning_text,
+                    },
+                ]
+            )
+        reasoning_events.append(
+            {"type": "response.output_item.done", "output_index": 0, "item": reasoning_item}
+        )
+        events[1:1] = reasoning_events
     content = "".join(
         f"event: {event['type']}\ndata: {json.dumps({**event, 'sequence_number': index})}\n\n"
         for index, event in enumerate(events)

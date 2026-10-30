@@ -77,9 +77,15 @@ def assert_otel_traces_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert the e2e OTEL collector debug output includes spans for this batch run."""
+    """Assert the collector retained reconstructable evidence for this batch run."""
     run_uid = _require_run_uid(bdd_context)
-    wait_for_otel_traces(k8s_core_client, batch_e2e_config.namespace, run_uid)
+    wait_for_otel_traces(
+        k8s_core_client,
+        batch_e2e_config.namespace,
+        run_uid,
+        expect_shaping=bdd_context["run_expects_shaping"],
+        phase=str(bdd_context.get("run_step", "analysis")),
+    )
 
 
 @then("the run fails closed with a tool-result safety inspection error")
@@ -98,12 +104,14 @@ def assert_otel_tool_result_inspection_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert inspection emitted a span correlated to this batch run."""
+    """Assert generation, source, inspection, and shaping evidence is reconstructable."""
     run_uid = _require_run_uid(bdd_context)
     wait_for_otel_tool_result_inspection(
         k8s_core_client,
         batch_e2e_config.namespace,
         run_uid,
+        expect_shaping=bdd_context["run_expects_shaping"],
+        phase=str(bdd_context.get("run_step", "analysis")),
     )
 
 
@@ -113,13 +121,15 @@ def assert_otel_malicious_tool_result_inspection_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert a malicious inspection span is correlated to this batch run."""
+    """Assert rejected-source evidence survives without later generations or output."""
     run_uid = _require_run_uid(bdd_context)
     wait_for_otel_tool_result_inspection(
         k8s_core_client,
         batch_e2e_config.namespace,
         run_uid,
+        expect_shaping=bdd_context["run_expects_shaping"],
         expected_outcome="malicious",
+        phase=str(bdd_context.get("run_step", "analysis")),
     )
 
 
