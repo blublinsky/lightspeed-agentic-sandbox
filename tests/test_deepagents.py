@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import sys
 from collections.abc import AsyncIterator, Iterator
@@ -1321,6 +1322,87 @@ class TestEventMapping:
         assert len(thinking_events) >= 1
         assert thinking_events[0].thinking == "Let me think about this..."
         assert len(stop_events) >= 1
+
+    def test_streamed_reasoning_chunks_form_one_thinking_log(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A streaming chunk is not a completed reasoning block."""
+        from langchain_core.messages import AIMessageChunk
+
+        from lightspeed_agentic.logging import EventLogger
+        from lightspeed_agentic.providers.deepagents import _process_ai_message
+
+        caplog.set_level(logging.INFO, logger="lightspeed_agentic")
+        event_logger = EventLogger("run")
+        for word in ("The", " root", " cause"):
+            chunk = AIMessageChunk(content=[{"type": "reasoning", "reasoning": word}])
+            events, *_ = _process_ai_message(chunk, include_tool_calls=False)
+            for event in events:
+                event_logger.log(event)
+        event_logger.log(ResultEvent(text="Done"))
+
+        thinking_lines = [
+            record.message
+            for record in caplog.records
+            if record.message.startswith("[provider:run] thinking:")
+        ]
+        assert thinking_lines == ["[provider:run] thinking: The root cause"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_stream_flushes_before_text_and_not_per_chunk(self) -> None:
+        from langchain_core.messages import AIMessageChunk
+
+        async def mock_astream(
+            *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+            for word in ("The", " cause"):
+                yield (
+                    AIMessageChunk(content=[{"type": "reasoning", "reasoning": word}]),
+                    {"langgraph_node": "agent"},
+                )
+            yield (AIMessageChunk(content="Answer", chunk_position="last"), {})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+            events = await _collect_events(provider, _base_options())
+
+        assert [event.type for event in events[:4]] == [
+            "thinking_delta",
+            "thinking_delta",
+            "content_block_stop",
+            "text_delta",
+        ]
+
+    def test_long_streamed_reasoning_is_logged_without_truncation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Buffering long streams must not discard characters at the log cap."""
+        from langchain_core.messages import AIMessageChunk
+
+        from lightspeed_agentic.logging import EventLogger
+        from lightspeed_agentic.providers.deepagents import _process_ai_message
+
+        caplog.set_level(logging.INFO, logger="lightspeed_agentic")
+        event_logger = EventLogger("run")
+        for piece in ("a" * 900, "b" * 900, "c" * 900):
+            chunk = AIMessageChunk(content=[{"type": "reasoning", "reasoning": piece}])
+            events, *_ = _process_ai_message(chunk, include_tool_calls=False)
+            for event in events:
+                event_logger.log(event)
+        event_logger.log(ResultEvent(text="Done"))
+
+        prefix = "[provider:run] thinking: "
+        cont_prefix = "[provider:run] thinking (cont.): "
+        thinking = []
+        for record in caplog.records:
+            if record.message.startswith(prefix):
+                thinking.append(record.message.removeprefix(prefix))
+            elif record.message.startswith(cont_prefix):
+                thinking.append(record.message.removeprefix(cont_prefix))
+        assert "".join(thinking) == "a" * 900 + "b" * 900 + "c" * 900
+        assert len(thinking) <= 2
+        assert all(len(part) <= 2000 for part in thinking)
 
     @pytest.mark.asyncio
     async def test_tool_call_and_result_events(self, monkeypatch: pytest.MonkeyPatch) -> None:

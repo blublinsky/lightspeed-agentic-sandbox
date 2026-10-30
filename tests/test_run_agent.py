@@ -370,6 +370,64 @@ async def test_run_agent_query_records_exception_type(span_exporter) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_agent_query_timeout_flushes_buffered_reasoning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Timeout emits buffered thinking instead of dropping it."""
+
+    class BlockingProvider(MockProvider):
+        async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            yield ThinkingDeltaEvent(thinking="BUFFERED_ON_TIMEOUT")
+            await asyncio.sleep(30)
+            yield ResultEvent(text='{"success":true,"summary":"never"}')  # pragma: no cover
+
+    caplog.set_level(logging.INFO, logger="lightspeed_agentic")
+    result = await run_agent_query(
+        BlockingProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=1,
+    )
+
+    assert result.timed_out is True
+    assert "[provider:run] thinking: BUFFERED_ON_TIMEOUT" in caplog.messages
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_exception_flushes_buffered_reasoning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Provider failure emits buffered thinking instead of dropping it."""
+
+    class FailingProvider(MockProvider):
+        async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            yield ThinkingDeltaEvent(thinking="BUFFERED_ON_ERROR")
+            raise ValueError("provider failure")
+            yield  # pragma: no cover
+
+    caplog.set_level(logging.INFO, logger="lightspeed_agentic")
+    result = await run_agent_query(
+        FailingProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+    )
+
+    assert result.output == {"success": False, "summary": "Agent error: provider failure"}
+    assert "[provider:run] thinking: BUFFERED_ON_ERROR" in caplog.messages
+
+
+@pytest.mark.asyncio
 async def test_run_agent_query_cancellation_closes_spans_without_flush(
     span_exporter, caplog: pytest.LogCaptureFixture
 ) -> None:

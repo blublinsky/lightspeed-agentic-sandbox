@@ -250,6 +250,7 @@ async def run_agent_query(
         ).observe(elapsed)
 
     try:
+        event_logger = EventLogger("run")
 
         async def run() -> None:
             nonlocal text, input_tokens, output_tokens, reasoning_tokens
@@ -268,7 +269,6 @@ async def run_agent_query(
                         deadline=time.monotonic() + timeout_seconds,
                     )
                 )
-                event_logger = EventLogger("run")
                 async for event in result:
                     event_logger.log(event)
                     audit_logger.process_event(event)
@@ -294,6 +294,7 @@ async def run_agent_query(
         await asyncio.wait_for(run(), timeout=timeout_seconds)
 
     except TimeoutError:
+        event_logger.flush()
         agent_span.set_attribute("error.type", "timeout")
         agent_span.set_status(StatusCode.ERROR, "agent run failed")
         elapsed = time.monotonic() - start_time
@@ -318,6 +319,7 @@ async def run_agent_query(
         audit_logger.close_pending_tools()
         raise
     except Exception as exc:
+        event_logger.flush()
         if isinstance(exc, ToolResultSafetyInspectionFailed):
             agent_span.set_attribute("error.type", type(exc).__name__)
             agent_span.set_status(StatusCode.ERROR, "agent run failed")

@@ -360,6 +360,30 @@ class TestGenAiChoiceEvents:
         assert events[0].name == "gen_ai.choice"
         assert events[0].attributes["gen_ai.reasoning_content"] == "let me think"
 
+    def test_streamed_reasoning_chunks_emit_one_choice_event(self, span_exporter) -> None:
+        from langchain_core.messages import AIMessageChunk
+
+        from lightspeed_agentic.providers.deepagents import _process_ai_message
+
+        al = _make_logger(capture_content=True)
+        tracer = trace.get_tracer("test")
+        with tracer.start_as_current_span("chat test") as span:
+            al.set_parent_context(trace.set_span_in_context(span))
+            for word in ("The", " root", " cause"):
+                chunk = AIMessageChunk(content=[{"type": "reasoning", "reasoning": word}])
+                events, *_ = _process_ai_message(chunk, include_tool_calls=False)
+                for event in events:
+                    al.process_event(event)
+            al.complete(input_tokens=0, output_tokens=0, span=span)
+
+        chat_span = next(s for s in span_exporter.get_finished_spans() if s.name == "chat test")
+        reasoning = [
+            event.attributes["gen_ai.reasoning_content"]
+            for event in chat_span.events
+            if "gen_ai.reasoning_content" in event.attributes
+        ]
+        assert reasoning == ["The root cause"]
+
     def test_empty_buffer_no_event(self, span_exporter) -> None:
         al = _make_logger(capture_content=True)
         tracer = trace.get_tracer("test")
